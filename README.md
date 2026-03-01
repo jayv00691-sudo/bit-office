@@ -144,6 +144,10 @@ Safeguards: max 5 delegation depth, max 20 total delegations, budget of 5 rounds
 | Yuki | QA / Tester | Concise, no fluff |
 | Marcus | Architect | Formal, strategic |
 
+## Inspiration
+
+Pixel office art inspired by [pixel-agents](https://github.com/pablodelucca/pixel-agents) by [@pablodelucca](https://github.com/pablodelucca).
+
 ## License
 
 MIT
