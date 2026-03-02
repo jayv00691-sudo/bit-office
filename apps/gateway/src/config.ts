@@ -84,7 +84,12 @@ function buildConfig() {
   const saved = loadSavedConfig();
   return {
     machineId: getOrCreateMachineId(),
-    defaultWorkspace: process.env.WORKSPACE || resolveDefaultWorkspace(),
+    defaultWorkspace: (() => {
+      const envWs = process.env.WORKSPACE;
+      if (envWs && existsSync(envWs)) return envWs;
+      if (envWs) console.log(`[Config] WORKSPACE="${envWs}" does not exist, using default`);
+      return resolveDefaultWorkspace();
+    })(),
     wsPort: 9090,
     ablyApiKey: process.env.ABLY_API_KEY || saved.ablyApiKey || undefined,
     webDir: resolveWebDir(),

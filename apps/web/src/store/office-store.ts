@@ -48,9 +48,15 @@ export interface TeamChatMessage {
   timestamp: number;
 }
 
+export interface TeamPhaseState {
+  phase: string;
+  leadAgentId: string;
+}
+
 interface OfficeStore {
   agents: Map<string, AgentState>;
   teamMessages: TeamChatMessage[];
+  teamPhases: Map<string, TeamPhaseState>;
   connected: boolean;
   hydrated: boolean;
   setConnected: (c: boolean) => void;
@@ -159,6 +165,31 @@ function loadTeamMessages(): TeamChatMessage[] {
   }
 }
 
+// ── Team phase persistence ──
+
+const TEAM_PHASE_KEY = "office-team-phase";
+
+function saveTeamPhases(phases: Map<string, TeamPhaseState>) {
+  if (!isBrowser()) return;
+  try {
+    const data: Record<string, TeamPhaseState> = {};
+    for (const [k, v] of phases) data[k] = v;
+    localStorage.setItem(TEAM_PHASE_KEY, JSON.stringify(data));
+  } catch { /* quota exceeded */ }
+}
+
+function loadTeamPhases(): Map<string, TeamPhaseState> {
+  if (!isBrowser()) return new Map();
+  try {
+    const raw = localStorage.getItem(TEAM_PHASE_KEY);
+    if (!raw) return new Map();
+    const data: Record<string, TeamPhaseState> = JSON.parse(raw);
+    return new Map(Object.entries(data));
+  } catch {
+    return new Map();
+  }
+}
+
 // ── Store ──
 
 function defaultAgent(agentId: string, name = agentId, role = ""): AgentState {
@@ -179,6 +210,7 @@ function defaultAgent(agentId: string, name = agentId, role = ""): AgentState {
 export const useOfficeStore = create<OfficeStore>((set, get) => ({
   agents: new Map(),
   teamMessages: [],
+  teamPhases: new Map(),
   connected: false,
   hydrated: false,
 
@@ -188,7 +220,8 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
     if (get().hydrated) return;
     const saved = loadFromStorage();
     const savedTeamMessages = loadTeamMessages();
-    if (saved.size === 0 && savedTeamMessages.length === 0) { set({ hydrated: true, teamMessages: savedTeamMessages }); return; }
+    const savedTeamPhases = loadTeamPhases();
+    if (saved.size === 0 && savedTeamMessages.length === 0 && savedTeamPhases.size === 0) { set({ hydrated: true, teamMessages: savedTeamMessages, teamPhases: savedTeamPhases }); return; }
     set((state) => {
       const agents = new Map(state.agents);
       for (const [agentId, persisted] of saved) {
@@ -204,7 +237,7 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
           });
         }
       }
-      return { agents, teamMessages: savedTeamMessages, hydrated: true };
+      return { agents, teamMessages: savedTeamMessages, teamPhases: savedTeamPhases, hydrated: true };
     });
   },
 
@@ -223,7 +256,8 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
 
   clearTeamMessages: () => {
     saveTeamMessages([]);
-    set({ teamMessages: [] });
+    saveTeamPhases(new Map());
+    set({ teamMessages: [], teamPhases: new Map() });
   },
 
   addUserMessage: (agentId, taskId, prompt) => {
@@ -299,6 +333,17 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
         case "AGENT_FIRED": {
           agents.delete(event.agentId);
           removeFromStorage(event.agentId);
+          // Clean up team phase if this was a team lead
+          const teamPhases = new Map(state.teamPhases);
+          for (const [teamId, tp] of teamPhases) {
+            if (tp.leadAgentId === event.agentId) {
+              teamPhases.delete(teamId);
+            }
+          }
+          if (teamPhases.size !== state.teamPhases.size) {
+            saveTeamPhases(teamPhases);
+            return { agents, teamPhases };
+          }
           break;
         }
         case "AGENT_STATUS": {
@@ -342,9 +387,21 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
           const replyId = event.taskId + "-reply";
           if (agent.messages.some((m) => m.id === replyId)) break; // dedupe
 
-          // Team lead intermediate completions (delegating, processing results)
-          // should not appear as chat messages — only the final summary matters
-          if (agent.isTeamLead && !event.isFinalResult) {
+          // Determine if leader is in a conversational phase
+          let leaderConversational = false;
+          if (agent.isTeamLead) {
+            for (const [, tp] of state.teamPhases) {
+              if (tp.leadAgentId === event.agentId) {
+                leaderConversational = ["create", "design", "complete"].includes(tp.phase);
+                break;
+              }
+            }
+          }
+
+          // Team lead intermediate completions in EXECUTE phase (delegating, processing results)
+          // should not appear as chat messages — only the final summary matters.
+          // In conversational phases (create, design, complete), always show the message.
+          if (agent.isTeamLead && !event.isFinalResult && !leaderConversational) {
             agents.set(event.agentId, {
               ...agent,
               status: "working",
@@ -544,6 +601,12 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
             },
           });
           break;
+        }
+        case "TEAM_PHASE": {
+          const teamPhases = new Map(state.teamPhases);
+          teamPhases.set(event.teamId, { phase: event.phase, leadAgentId: event.leadAgentId });
+          saveTeamPhases(teamPhases);
+          return { agents, teamPhases };
         }
       }
 

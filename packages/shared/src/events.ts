@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentStatusEnum, RiskLevelEnum } from "./types";
+import { AgentStatusEnum, RiskLevelEnum, TeamPhaseEnum } from "./types";
 
 export const AgentStatusEvent = z.object({
   type: z.literal("AGENT_STATUS"),
@@ -47,6 +47,8 @@ export const TaskResultPayload = z.object({
   nextSuggestion: z.string().optional(),
   previewUrl: z.string().optional(),
   previewPath: z.string().optional(),
+  entryFile: z.string().optional(),
+  projectDir: z.string().optional(),
   tokenUsage: TokenUsage.optional(),
 });
 
@@ -128,6 +130,13 @@ export const TokenUpdateEvent = z.object({
   outputTokens: z.number(),
 });
 
+export const TeamPhaseEvent = z.object({
+  type: z.literal("TEAM_PHASE"),
+  teamId: z.string(),
+  phase: TeamPhaseEnum,
+  leadAgentId: z.string(),
+});
+
 export const GatewayEventSchema = z.discriminatedUnion("type", [
   AgentStatusEvent,
   TaskStartedEvent,
@@ -142,6 +151,7 @@ export const GatewayEventSchema = z.discriminatedUnion("type", [
   TeamChatEvent,
   TaskQueuedEvent,
   TokenUpdateEvent,
+  TeamPhaseEvent,
 ]);
 
 export type TokenUsage = z.infer<typeof TokenUsage>;
@@ -159,4 +169,5 @@ export type TaskResultReturnedEvent = z.infer<typeof TaskResultReturnedEvent>;
 export type TeamChatEvent = z.infer<typeof TeamChatEvent>;
 export type TaskQueuedEvent = z.infer<typeof TaskQueuedEvent>;
 export type TokenUpdateEvent = z.infer<typeof TokenUpdateEvent>;
+export type TeamPhaseEvent = z.infer<typeof TeamPhaseEvent>;
 export type GatewayEvent = z.infer<typeof GatewayEventSchema>;

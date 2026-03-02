@@ -10,7 +10,7 @@ import type { Command, GatewayEvent } from "@office/shared";
 import { AGENT_PRESETS } from "@office/shared";
 import { nanoid } from "nanoid";
 import { execFile } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import path from "path";
 import os from "os";
 import { ProcessScanner } from "./process-scanner.js";
@@ -28,6 +28,19 @@ let outputReader: ExternalOutputReader | null = null;
 /** Track external agents so PING can broadcast them */
 const externalAgents = new Map<string, { agentId: string; name: string; backendId: string; pid: number; cwd: string | null; startedAt: number; status: "working" | "idle" }>();
 
+/** Track team collaboration phases */
+const teamPhases = new Map<string, { phase: "create" | "design" | "execute" | "complete"; leadAgentId: string }>();
+
+function publishTeamPhase(teamId: string, phase: "create" | "design" | "execute" | "complete", leadAgentId: string) {
+  teamPhases.set(teamId, { phase, leadAgentId });
+  publishEvent({
+    type: "TEAM_PHASE",
+    teamId,
+    phase,
+    leadAgentId,
+  });
+}
+
 function generatePairCode(): string {
   return nanoid(6).toUpperCase();
 }
@@ -44,6 +57,52 @@ function showPairCode() {
   console.log("");
 }
 
+/**
+ * Extract a short project name from the leader's plan output.
+ * Falls back to "project" if no meaningful name is found.
+ */
+function extractProjectName(planText: string): string {
+  const patterns = [
+    // "Goal: Build a match-3 game" or "目标：做一个消消乐"
+    /(?:goal|project|目标|项目)\s*[:：]\s*(.+)/i,
+    /\[PLAN\][\s\S]*?(?:goal|project|目标)\s*[:：]\s*(.+)/i,
+    // "Build a match-3 game with ..."
+    /(?:build|create|make|开发|做|构建)\s+(?:a\s+)?(.+?)(?:\s+(?:with|using|that|for|，|。)\b|[.\n])/i,
+  ];
+  for (const re of patterns) {
+    const m = planText.match(re);
+    if (m) {
+      const raw = m[1].trim().slice(0, 40);
+      // Keep letters, numbers, CJK chars, spaces → convert to kebab-case
+      const kebab = raw
+        .toLowerCase()
+        .replace(/[^a-z0-9\u4e00-\u9fff\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+      if (kebab.length >= 2) return kebab;
+    }
+  }
+  return "project";
+}
+
+/**
+ * Create a unique project directory inside the workspace.
+ * If "game" exists, tries "game-2", "game-3", etc.
+ */
+function createUniqueProjectDir(workspace: string, baseName: string): string {
+  let dirName = baseName;
+  let counter = 1;
+  while (existsSync(path.join(workspace, dirName))) {
+    counter++;
+    dirName = `${baseName}-${counter}`;
+  }
+  const fullPath = path.join(workspace, dirName);
+  mkdirSync(fullPath, { recursive: true });
+  console.log(`[Gateway] Created project directory: ${fullPath}`);
+  return fullPath;
+}
+
 // ---------------------------------------------------------------------------
 // Map orchestrator events → GatewayEvent (wire protocol)
 // ---------------------------------------------------------------------------
@@ -52,8 +111,28 @@ function mapOrchestratorEvent(e: OrchestratorEvent): GatewayEvent | null {
   switch (e.type) {
     case "task:started":
       return { type: "TASK_STARTED", agentId: e.agentId, taskId: e.taskId, prompt: e.prompt };
-    case "task:done":
+    case "task:done": {
+      // Detect create→design transition: leader output contains [PLAN]
+      const resultText = (e.result?.summary ?? "") + (e.result?.fullOutput ?? "");
+      if (resultText && /\[PLAN\]/i.test(resultText)) {
+        for (const [teamId, tp] of teamPhases) {
+          if (tp.leadAgentId === e.agentId && tp.phase === "create") {
+            publishTeamPhase(teamId, "design", e.agentId);
+            break;
+          }
+        }
+      }
+      // Detect execute→complete transition: team lead finished with isFinalResult
+      if (e.isFinalResult) {
+        for (const [teamId, tp] of teamPhases) {
+          if (tp.leadAgentId === e.agentId && tp.phase === "execute") {
+            publishTeamPhase(teamId, "complete", e.agentId);
+            break;
+          }
+        }
+      }
       return { type: "TASK_DONE", agentId: e.agentId, taskId: e.taskId, result: e.result, isFinalResult: e.isFinalResult };
+    }
     case "task:failed":
       return { type: "TASK_FAILED", agentId: e.agentId, taskId: e.taskId, error: e.error };
     case "task:delegated":
@@ -134,7 +213,26 @@ function handleCommand(parsed: Command) {
       }
       if (agent) {
         console.log(`[Gateway] RUN_TASK: agent=${parsed.agentId}, isLead=${orc.isTeamLead(parsed.agentId)}, hasTeam=${orc.getAllAgents().length > 1}`);
-        orc.runTask(parsed.agentId, parsed.taskId, parsed.prompt, { repoPath: parsed.repoPath });
+
+        // Look up team phase for team leads and pass phaseOverride
+        let phaseOverride: string | undefined;
+        if (orc.isTeamLead(parsed.agentId)) {
+          for (const [, tp] of teamPhases) {
+            if (tp.leadAgentId === parsed.agentId) {
+              phaseOverride = tp.phase;
+              // If user sends message in complete phase, transition back to execute
+              if (tp.phase === "complete") {
+                const teamId = Array.from(teamPhases.entries()).find(([, v]) => v.leadAgentId === parsed.agentId)?.[0];
+                if (teamId) {
+                  publishTeamPhase(teamId, "execute", parsed.agentId);
+                  phaseOverride = "execute";
+                }
+              }
+              break;
+            }
+          }
+        }
+        orc.runTask(parsed.agentId, parsed.taskId, parsed.prompt, { repoPath: parsed.repoPath, phaseOverride });
       } else {
         publishEvent({
           type: "TASK_FAILED",
@@ -217,6 +315,11 @@ function handleCommand(parsed: Command) {
           messageType: "status",
           timestamp: Date.now(),
         });
+
+        // Initialize phase system and auto-greet
+        publishTeamPhase(teamId, "create", leadAgentId);
+        const greetTaskId = nanoid();
+        orc.runTask(leadAgentId, greetTaskId, "Greet the user and ask what they would like to build.", { phaseOverride: "create" });
       }
       break;
     }
@@ -233,6 +336,7 @@ function handleCommand(parsed: Command) {
         if (pid) scanner?.addGracePid(pid);
       }
       orc.fireTeam();
+      teamPhases.clear();
       break;
     }
     case "KILL_EXTERNAL": {
@@ -258,6 +362,59 @@ function handleCommand(parsed: Command) {
       }
       break;
     }
+    case "APPROVE_PLAN": {
+      const agentId = parsed.agentId;
+      console.log(`[Gateway] APPROVE_PLAN: agent=${agentId}`);
+      // Capture the approved plan as originalTask so the execute template can reference it
+      const approvedPlan = orc.getLeaderLastOutput(agentId);
+      if (approvedPlan) {
+        orc.setOriginalTask(agentId, approvedPlan);
+        console.log(`[Gateway] Captured approved plan (${approvedPlan.length} chars) for leader ${agentId}`);
+      }
+      // Create a unique project directory for this team
+      const projectName = extractProjectName(approvedPlan ?? "project");
+      const projectDir = createUniqueProjectDir(config.defaultWorkspace, projectName);
+      orc.setTeamProjectDir(projectDir);
+      // Find team phase for this leader (recover from orchestrator if needed)
+      let approveTeamId: string | undefined;
+      for (const [teamId, tp] of teamPhases) {
+        if (tp.leadAgentId === agentId) { approveTeamId = teamId; break; }
+      }
+      if (!approveTeamId) {
+        const agentInfo = orc.getAllAgents().find(a => a.agentId === agentId);
+        if (agentInfo?.teamId) approveTeamId = agentInfo.teamId;
+      }
+      if (approveTeamId) {
+        publishTeamPhase(approveTeamId, "execute", agentId);
+        const taskId = nanoid();
+        orc.runTask(agentId, taskId, `The user approved your plan. Execute it now by delegating tasks to your team members. All work must go in the project directory: ${path.basename(projectDir)}/`, { phaseOverride: "execute" });
+      }
+      break;
+    }
+    case "END_PROJECT": {
+      const agentId = parsed.agentId;
+      console.log(`[Gateway] END_PROJECT: agent=${agentId}`);
+      orc.clearLeaderHistory(agentId);
+
+      // Find teamId from teamPhases, or recover from orchestrator agent info
+      let foundTeamId: string | undefined;
+      for (const [teamId, tp] of teamPhases) {
+        if (tp.leadAgentId === agentId) { foundTeamId = teamId; break; }
+      }
+      if (!foundTeamId) {
+        const agentInfo = orc.getAllAgents().find(a => a.agentId === agentId);
+        if (agentInfo?.teamId) foundTeamId = agentInfo.teamId;
+      }
+
+      if (foundTeamId) {
+        publishTeamPhase(foundTeamId, "create", agentId);
+        const greetTaskId = nanoid();
+        orc.runTask(agentId, greetTaskId, "Greet the user and ask what they would like to build next.", { phaseOverride: "create" });
+      } else {
+        console.log(`[Gateway] END_PROJECT: no team found for agent ${agentId}, ignoring`);
+      }
+      break;
+    }
     case "PING": {
       console.log("[Gateway] Received PING, broadcasting agent statuses");
       for (const agent of orc.getAllAgents()) {
@@ -276,6 +433,20 @@ function handleCommand(parsed: Command) {
           type: "AGENT_STATUS",
           agentId: agent.agentId,
           status: agent.status,
+        });
+        // Restore teamPhases from orchestrator state if lost (e.g. after gateway restart)
+        if (agent.isTeamLead && agent.teamId && !teamPhases.has(agent.teamId)) {
+          teamPhases.set(agent.teamId, { phase: "create", leadAgentId: agent.agentId });
+          console.log(`[Gateway] Restored team phase for ${agent.teamId} (leader=${agent.agentId})`);
+        }
+      }
+      // Broadcast team phase state
+      for (const [teamId, tp] of teamPhases) {
+        publishEvent({
+          type: "TEAM_PHASE",
+          teamId,
+          phase: tp.phase,
+          leadAgentId: tp.leadAgentId,
         });
       }
       // Also broadcast external agents

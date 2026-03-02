@@ -1,9 +1,11 @@
 import { EventEmitter } from "events";
+import path from "path";
 import { nanoid } from "nanoid";
 import { AgentSession } from "./agent-session.js";
 import { AgentManager } from "./agent-manager.js";
 import { DelegationRouter } from "./delegation.js";
 import { PromptEngine } from "./prompt-templates.js";
+import { previewServer } from "./preview-server.js";
 import { RetryTracker } from "./retry.js";
 import { createWorktree, mergeWorktree, removeWorktree } from "./worktree.js";
 import type { AIBackend } from "./ai-backend.js";
@@ -30,6 +32,10 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
   private worktreeMerge: boolean;
   /** Preview captured from the first dev worker that produces one — not from QA/reviewer */
   private teamPreview: { previewUrl: string; previewPath?: string } | null = null;
+  /** Accumulated changedFiles from all workers in the current team session */
+  private teamChangedFiles = new Set<string>();
+  /** Guard against emitting isFinalResult more than once per execute cycle. */
+  private teamFinalized = false;
 
   constructor(opts: OrchestratorOptions) {
     super();
@@ -186,9 +192,17 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
 
     // User-initiated task on team lead: store original task + reset delegation counters
     if (this.agentManager.isTeamLead(agentId) && !this.delegationRouter.isDelegated(taskId)) {
-      session.originalTask = prompt;
+      // Don't overwrite originalTask if it was pre-set (e.g. approved plan captured before execute)
+      if (!session.originalTask || !opts?.phaseOverride || opts.phaseOverride !== "execute") {
+        session.originalTask = prompt;
+      }
+      // Preserve team project dir across execute cycles (set by gateway before runTask)
+      const savedProjectDir = this.delegationRouter.getTeamProjectDir();
       this.delegationRouter.clearAll();
+      if (savedProjectDir) this.delegationRouter.setTeamProjectDir(savedProjectDir);
       this.teamPreview = null;
+      this.teamChangedFiles.clear();
+      this.teamFinalized = false;
     }
 
     // Track for retry
@@ -218,7 +232,7 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
       ? this.agentManager.getTeamRoster()
       : undefined;
 
-    session.runTask(taskId, prompt, repoPath, teamContext, true /* isUserInitiated */);
+    session.runTask(taskId, prompt, repoPath, teamContext, true /* isUserInitiated */, opts?.phaseOverride);
   }
 
   cancelTask(agentId: string): void {
@@ -318,6 +332,39 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
     return this.agentManager.isTeamLead(agentId);
   }
 
+  /** Get the leader's last full output (used to capture the approved plan). */
+  getLeaderLastOutput(agentId: string): string | null {
+    const session = this.agentManager.get(agentId);
+    return session?.lastFullOutput ?? null;
+  }
+
+  /** Set team-wide project directory — all delegations will use this as cwd. */
+  setTeamProjectDir(dir: string | null): void {
+    this.delegationRouter.setTeamProjectDir(dir);
+  }
+
+  getTeamProjectDir(): string | null {
+    return this.delegationRouter.getTeamProjectDir();
+  }
+
+  /** Set the original task context for the leader (e.g. the approved plan). */
+  setOriginalTask(agentId: string, task: string): void {
+    const session = this.agentManager.get(agentId);
+    if (session) session.originalTask = task;
+  }
+
+  /** Clear leader conversation history for a fresh project cycle. */
+  clearLeaderHistory(agentId: string): void {
+    const session = this.agentManager.get(agentId);
+    if (session) {
+      session.clearHistory();
+      this.delegationRouter.clearAll();
+      this.teamPreview = null;
+      this.teamChangedFiles.clear();
+      this.teamFinalized = false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Cleanup
   // ---------------------------------------------------------------------------
@@ -403,6 +450,13 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
 
       this.retryTracker?.clear(event.taskId);
 
+      // Accumulate changedFiles from all workers (not leader, not QA/reviewer)
+      if (!this.agentManager.isTeamLead(agentId) && event.result?.changedFiles) {
+        for (const f of event.result.changedFiles) {
+          this.teamChangedFiles.add(f);
+        }
+      }
+
       // Capture preview from dev workers as soon as they complete.
       // Only dev workers (not QA, not reviewer, not leader) should set preview.
       // First valid preview wins — don't overwrite with later workers.
@@ -432,13 +486,21 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
         const budgetForced = this.delegationRouter.isBudgetExhausted()
           && !this.delegationRouter.hasPendingFrom(agentId);
 
-        const shouldFinalize = leaderDidNotDelegateNewWork || budgetForced;
+        const shouldFinalize = (leaderDidNotDelegateNewWork || budgetForced) && !this.teamFinalized;
 
         if (shouldFinalize) {
+          this.teamFinalized = true;
           event.isFinalResult = true;
 
           // Clear any straggler delegations so they don't restart the leader later
           this.delegationRouter.clearAgent(agentId);
+
+          // Merge accumulated worker changedFiles into the leader's final result
+          if (event.result && this.teamChangedFiles.size > 0) {
+            const merged = new Set(event.result.changedFiles ?? []);
+            for (const f of this.teamChangedFiles) merged.add(f);
+            event.result.changedFiles = Array.from(merged);
+          }
 
           // Use preview captured earlier from dev workers
           if (!event.result?.previewUrl && this.teamPreview && event.result) {
@@ -455,6 +517,38 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
                 event.result.previewUrl = previewUrl;
                 event.result.previewPath = previewPath;
                 break;
+              }
+            }
+          }
+
+          // Fallback: use leader's ENTRY_FILE as preview (leader parses it from its own output)
+          if (!event.result?.previewUrl && event.result?.entryFile) {
+            const entryFile = event.result.entryFile;
+            if (/\.html?$/i.test(entryFile)) {
+              const absPath = path.isAbsolute(entryFile)
+                ? entryFile
+                : path.join(event.result.projectDir
+                    ? path.resolve(this.workspace, event.result.projectDir)
+                    : this.workspace, entryFile);
+              const url = previewServer.serve(absPath);
+              if (url) {
+                event.result.previewUrl = url;
+                event.result.previewPath = absPath;
+                console.log(`[Orchestrator] Preview from leader ENTRY_FILE: ${url}`);
+              }
+            }
+          }
+
+          // Fallback: scan accumulated changedFiles for .html
+          if (!event.result?.previewUrl && event.result && this.teamChangedFiles.size > 0) {
+            const htmlFile = Array.from(this.teamChangedFiles).find(f => /\.html?$/i.test(f));
+            if (htmlFile) {
+              const absPath = path.isAbsolute(htmlFile) ? htmlFile : path.join(this.workspace, htmlFile);
+              const url = previewServer.serve(absPath);
+              if (url) {
+                event.result.previewUrl = url;
+                event.result.previewPath = absPath;
+                console.log(`[Orchestrator] Preview from teamChangedFiles: ${url}`);
               }
             }
           }

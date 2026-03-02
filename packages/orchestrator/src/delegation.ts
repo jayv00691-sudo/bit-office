@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import path from "path";
 import type { AgentManager } from "./agent-manager.js";
 import type { AgentSession } from "./agent-session.js";
 import type { PromptEngine } from "./prompt-templates.js";
@@ -37,6 +38,8 @@ export class DelegationRouter {
   private delegationsAtResultStart = new Map<string, number>();
   /** Batch result forwarding: originAgentId → pending results + timer */
   private pendingResults = new Map<string, { results: PendingResult[]; timer: ReturnType<typeof setTimeout> }>();
+  /** Team-wide project directory — all delegations use this as repoPath when set */
+  private teamProjectDir: string | null = null;
   private agentManager: AgentManager;
   private promptEngine: PromptEngine;
   private emitEvent: (event: OrchestratorEvent) => void;
@@ -126,6 +129,18 @@ export class DelegationRouter {
   }
 
   /**
+   * Set a team-wide project directory. All delegations will use this as repoPath.
+   */
+  setTeamProjectDir(dir: string | null): void {
+    this.teamProjectDir = dir;
+    if (dir) console.log(`[Delegation] Team project dir set: ${dir}`);
+  }
+
+  getTeamProjectDir(): string | null {
+    return this.teamProjectDir;
+  }
+
+  /**
    * Reset all delegation state (on new team task).
    */
   clearAll(): void {
@@ -137,6 +152,7 @@ export class DelegationRouter {
     this.totalDelegations = 0;
     this.leaderRounds = 0;
     this.stopped = false;
+    this.teamProjectDir = null;
     for (const pending of this.pendingResults.values()) {
       clearTimeout(pending.timer);
     }
@@ -146,6 +162,13 @@ export class DelegationRouter {
   private wireDelegation(session: AgentSession): void {
     session.onDelegation = (fromAgentId, targetName, prompt) => {
       if (this.stopped) return;
+
+      // Block delegation in conversational phases (create, design, complete)
+      const phaseCheckSession = this.agentManager.get(fromAgentId);
+      if (phaseCheckSession?.currentPhase && phaseCheckSession.currentPhase !== "execute") {
+        console.log(`[Delegation] BLOCKED: agent ${fromAgentId} is in phase "${phaseCheckSession.currentPhase}", not "execute"`);
+        return;
+      }
 
       if (this.leaderRounds >= DELEGATION_BUDGET_ROUNDS) {
         console.log(`[Delegation] BLOCKED: delegation budget exhausted (round ${this.leaderRounds}/${DELEGATION_BUDGET_ROUNDS})`);
@@ -194,15 +217,32 @@ export class DelegationRouter {
       const fromName = fromSession?.name ?? fromAgentId;
       const fromRole = fromSession?.role ?? "Team Lead";
 
-      const fullPrompt = this.promptEngine.render("delegation-prefix", { fromName, fromRole, prompt });
+      // Use team project dir if set (created by gateway on APPROVE_PLAN);
+      // otherwise fall back to parsing [project-dir] from the delegation prompt.
+      let repoPath: string | undefined = this.teamProjectDir ?? undefined;
+      let cleanPrompt = prompt;
+      const dirMatch = prompt.match(/^\s*\[([^\]]+)\]\s*/);
+      if (dirMatch) {
+        // Strip [project-dir] prefix from prompt even if we don't use it for repoPath
+        cleanPrompt = prompt.slice(dirMatch[0].length);
+        if (!repoPath) {
+          const dirPart = dirMatch[1].replace(/\/$/, "");
+          const leaderSession = this.agentManager.get(fromAgentId);
+          if (leaderSession) {
+            repoPath = path.resolve(leaderSession.workspaceDir, dirPart);
+          }
+        }
+      }
 
-      console.log(`[Delegation] ${fromAgentId} -> ${target.agentId} (${targetName}) depth=${newDepth} total=${this.totalDelegations}: ${prompt.slice(0, 80)}`);
+      const fullPrompt = this.promptEngine.render("delegation-prefix", { fromName, fromRole, prompt: cleanPrompt });
+
+      console.log(`[Delegation] ${fromAgentId} -> ${target.agentId} (${targetName}) depth=${newDepth} total=${this.totalDelegations} repoPath=${repoPath ?? "default"}: ${cleanPrompt.slice(0, 80)}`);
       this.emitEvent({
         type: "task:delegated",
         fromAgentId,
         toAgentId: target.agentId,
         taskId,
-        prompt,
+        prompt: cleanPrompt,
       });
       this.emitEvent({
         type: "team:chat",
@@ -214,7 +254,7 @@ export class DelegationRouter {
         timestamp: Date.now(),
       });
       this.assignedTask.set(target.agentId, taskId);
-      target.runTask(taskId, fullPrompt);
+      target.runTask(taskId, fullPrompt, repoPath);
     };
   }
 

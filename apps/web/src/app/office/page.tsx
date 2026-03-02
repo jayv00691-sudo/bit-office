@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useOfficeStore } from "@/store/office-store";
-import type { ChatMessage, TeamChatMessage } from "@/store/office-store";
+import type { ChatMessage, TeamChatMessage, TeamPhaseState } from "@/store/office-store";
 import { connect, sendCommand } from "@/lib/connection";
 import { getConnection } from "@/lib/storage";
 import { nanoid } from "nanoid";
@@ -474,7 +474,7 @@ function MdContent({ text }: { text: string }) {
   );
 }
 
-function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember }: { msg: ChatMessage; onPreview?: (url: string) => void; isTeamLead?: boolean; isTeamMember?: boolean }) {
+function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: { msg: ChatMessage; onPreview?: (url: string) => void; isTeamLead?: boolean; isTeamMember?: boolean; teamPhase?: string | null }) {
   const [expanded, setExpanded] = useState(false);
 
   if (msg.role === "user") {
@@ -521,6 +521,141 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember }: { msg: Chat
 
   const hasFullOutput = !!(msg.result?.fullOutput && msg.result.fullOutput !== msg.text && msg.result.fullOutput.length > msg.text.length + 20);
 
+  // Detect [PLAN]...[/PLAN] blocks
+  const planMatch = msg.text.match(/\[PLAN\]([\s\S]*?)\[\/PLAN\]/i);
+  const planContent = planMatch?.[1]?.trim();
+  const textWithoutPlan = planContent ? msg.text.replace(/\[PLAN\][\s\S]*?\[\/PLAN\]/i, "").trim() : null;
+
+  // ── Completion Card: fixed-format delivery for team lead isFinalResult ──
+  if (isTeamLead && msg.isFinalResult && msg.result) {
+    const r = msg.result;
+    // Strip structured markers from the summary for display
+    const cleanSummary = r.summary
+      .replace(/ENTRY_FILE:\s*.+/gi, "")
+      .replace(/PROJECT_DIR:\s*.+/gi, "")
+      .replace(/SUMMARY:\s*/gi, "")
+      .trim();
+    const entryFile = r.entryFile ?? r.summary.match(/ENTRY_FILE:\s*(.+)/i)?.[1]?.trim();
+    const projectDir = r.projectDir ?? r.summary.match(/PROJECT_DIR:\s*(.+)/i)?.[1]?.trim();
+
+    // Build file tree from changedFiles
+    const changedFiles = r.changedFiles ?? [];
+
+    return (
+      <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 8 }}>
+        <div style={{
+          maxWidth: "90%", width: "100%",
+          border: "2px solid #48cc6a",
+          backgroundColor: "#0a1f12",
+          overflow: "hidden",
+        }}>
+          {/* Header */}
+          <div style={{
+            padding: "10px 14px",
+            backgroundColor: "#143a14",
+            borderBottom: "1px solid #48cc6a40",
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <span style={{ fontSize: 14 }}>✓</span>
+            <span style={{
+              fontSize: 11, fontWeight: 700, color: "#48cc6a",
+              fontFamily: "monospace", letterSpacing: "0.08em",
+            }}>PROJECT DELIVERED</span>
+          </div>
+
+          {/* Summary */}
+          <div style={{ padding: "12px 14px" }} className="chat-markdown">
+            <div style={{ color: "#d8c8a8", fontSize: 13, lineHeight: 1.6 }}>
+              <MdContent text={cleanSummary || "Project completed successfully."} />
+            </div>
+          </div>
+
+          {/* Project info */}
+          {(projectDir || entryFile) && (
+            <div style={{
+              padding: "8px 14px",
+              borderTop: "1px solid #48cc6a20",
+              display: "flex", gap: 16, flexWrap: "wrap",
+            }}>
+              {projectDir && (
+                <div style={{ fontSize: 11, fontFamily: "monospace" }}>
+                  <span style={{ color: "#7a8a6a" }}>Directory: </span>
+                  <span style={{ color: "#e8b040" }}>{projectDir}</span>
+                </div>
+              )}
+              {entryFile && (
+                <div style={{ fontSize: 11, fontFamily: "monospace" }}>
+                  <span style={{ color: "#7a8a6a" }}>Entry: </span>
+                  <span
+                    style={{ color: "#e8b040", cursor: "pointer", textDecoration: "underline" }}
+                    onClick={() => sendCommand({ type: "OPEN_FILE", path: entryFile })}
+                  >{entryFile}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Changed files */}
+          {changedFiles.length > 0 && (
+            <div style={{
+              padding: "8px 14px",
+              borderTop: "1px solid #48cc6a20",
+            }}>
+              <div style={{ fontSize: 10, color: "#7a8a6a", marginBottom: 4, fontFamily: "monospace" }}>
+                {changedFiles.length} FILES
+              </div>
+              {changedFiles.slice(0, 8).map((f, i) => (
+                <div key={i} style={{
+                  fontSize: 11, fontFamily: "monospace", color: "#b8a878",
+                  padding: "1px 0",
+                }}>{f}</div>
+              ))}
+              {changedFiles.length > 8 && (
+                <div style={{ fontSize: 10, color: "#5a4838", fontFamily: "monospace" }}>
+                  ...and {changedFiles.length - 8} more
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Preview button — deterministic: always show in complete phase */}
+          {r.previewUrl && onPreview && (
+            <div style={{
+              padding: "10px 14px",
+              borderTop: "1px solid #48cc6a20",
+            }}>
+              <button
+                onClick={() => {
+                  if (r.previewPath) {
+                    sendCommand({ type: "SERVE_PREVIEW", filePath: r.previewPath });
+                  }
+                  onPreview(r.previewUrl!);
+                }}
+                style={{
+                  width: "100%", padding: "10px 16px",
+                  backgroundColor: "#143a14", color: "#48cc6a",
+                  border: "1px solid #48cc6a50", cursor: "pointer",
+                  fontSize: 12, fontWeight: 700, fontFamily: "monospace",
+                }}
+              >
+                ▶ Preview Result
+              </button>
+            </div>
+          )}
+
+          {/* Footer prompt */}
+          <div style={{
+            padding: "8px 14px",
+            borderTop: "1px solid #48cc6a20",
+            fontSize: 11, color: "#5a7a5a", fontFamily: "monospace",
+          }}>
+            Send feedback to request changes, or End Project to start fresh.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 8 }}>
       <div style={{
@@ -530,8 +665,30 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember }: { msg: Chat
         border: "1px solid #3d2e54",
         borderLeft: "2px solid #3d2e54",
       }} className="chat-markdown">
-        <MdContent text={expanded && msg.result?.fullOutput ? msg.result.fullOutput : msg.text} />
-        {hasFullOutput && (
+        {planContent ? (
+          <>
+            {textWithoutPlan && <MdContent text={textWithoutPlan} />}
+            <div style={{
+              marginTop: textWithoutPlan ? 8 : 0,
+              padding: "10px 12px",
+              border: "2px solid #e8b040",
+              backgroundColor: "#261a00",
+              borderRadius: 0,
+            }}>
+              <div style={{
+                fontSize: 10, fontWeight: 700, color: "#e8b040",
+                fontFamily: "monospace", letterSpacing: "0.1em",
+                marginBottom: 8,
+              }}>PROJECT PLAN</div>
+              <div style={{ color: "#eddcb8", fontSize: 12 }}>
+                <MdContent text={planContent} />
+              </div>
+            </div>
+          </>
+        ) : (
+          <MdContent text={expanded && msg.result?.fullOutput ? msg.result.fullOutput : msg.text} />
+        )}
+        {hasFullOutput && !planContent && (
           <button
             onClick={() => setExpanded(!expanded)}
             style={{
@@ -544,7 +701,7 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember }: { msg: Chat
             {expanded ? "▲ Collapse" : "▼ Full output"}
           </button>
         )}
-        {msg.result && msg.result.changedFiles.length > 0 && (
+        {msg.result && msg.result.changedFiles.length > 0 && !planContent && (
           <div style={{
             marginTop: 8, padding: "6px 8px",
             backgroundColor: "#1a1530", fontSize: 11, border: "1px solid #3d2e54",
@@ -558,10 +715,9 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember }: { msg: Chat
             )}
           </div>
         )}
-        {/* TODO: per-task token usage display disabled for now */}
+        {/* Preview: for solo agents (non-team-lead), show based on result data */}
         {msg.result?.previewUrl && onPreview
-          && !isTeamMember
-          && (!isTeamLead || msg.isFinalResult)
+          && !isTeamMember && !isTeamLead
         && (
           <button
             onClick={() => {
@@ -899,7 +1055,7 @@ function HireTeamModal({ onCreateTeam, onClose, assetsReady }: {
 
 export default function OfficePage() {
   const router = useRouter();
-  const { agents, connected, addUserMessage, teamMessages, clearTeamMessages } = useOfficeStore();
+  const { agents, connected, addUserMessage, teamMessages, clearTeamMessages, teamPhases } = useOfficeStore();
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [celebration, setCelebration] = useState<{ previewUrl?: string; previewPath?: string } | null>(null);
@@ -1142,6 +1298,29 @@ export default function OfficePage() {
   const handleCancel = useCallback(() => {
     if (!selectedAgent) return;
     sendCommand({ type: "CANCEL_TASK", agentId: selectedAgent, taskId: "" });
+  }, [selectedAgent]);
+
+  // Get the current team phase for the selected agent (if it's a team lead)
+  const getAgentPhase = useCallback((agentId: string): string | null => {
+    for (const [, tp] of teamPhases) {
+      if (tp.leadAgentId === agentId) return tp.phase;
+    }
+    return null;
+  }, [teamPhases]);
+
+  const selectedAgentPhase = selectedAgent ? getAgentPhase(selectedAgent) : null;
+
+  // Note: [PLAN] detection is handled by the gateway, which transitions to "design" phase.
+  // The frontend just checks the phase to decide whether to show the Approve button.
+
+  const handleApprovePlan = useCallback(() => {
+    if (!selectedAgent) return;
+    sendCommand({ type: "APPROVE_PLAN", agentId: selectedAgent });
+  }, [selectedAgent]);
+
+  const handleEndProject = useCallback(() => {
+    if (!selectedAgent) return;
+    sendCommand({ type: "END_PROJECT", agentId: selectedAgent });
   }, [selectedAgent]);
 
   const handleApproval = useCallback((approvalId: string, decision: "yes" | "no") => {
@@ -1448,6 +1627,22 @@ export default function OfficePage() {
                         : <>{agent.status === "done" ? "✓ " : agent.status === "working" ? "▶ " : ""}{cfg.label}</>
                       }
                     </span>
+                    {/* Phase badge for team leads */}
+                    {agentState?.isTeamLead && (() => {
+                      const phase = getAgentPhase(agent.agentId);
+                      if (!phase) return null;
+                      const PHASE_COLORS: Record<string, string> = { create: "#5aacff", design: "#e8b040", execute: "#e89030", complete: "#48cc6a" };
+                      return (
+                        <span style={{
+                          fontSize: 8, padding: "1px 4px",
+                          backgroundColor: (PHASE_COLORS[phase] ?? "#888") + "18",
+                          color: PHASE_COLORS[phase] ?? "#888",
+                          border: `1px solid ${(PHASE_COLORS[phase] ?? "#888")}40`,
+                          flexShrink: 0, whiteSpace: "nowrap", fontFamily: "monospace",
+                          textTransform: "uppercase", letterSpacing: "0.05em",
+                        }}>{phase}</span>
+                      );
+                    })()}
                     {agentState?.teamId && (agentState.isTeamLead || !Array.from(agents.values()).some(a => a.teamId === agentState.teamId && a.isTeamLead)) && (
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                         {teamBusy && (
@@ -1561,6 +1756,33 @@ export default function OfficePage() {
                         display: "flex", flexDirection: "column",
                         minHeight: 0,
                       }}>
+                        {/* Phase banner for team leads */}
+                        {agentState?.isTeamLead && (() => {
+                          const phase = getAgentPhase(agent.agentId);
+                          if (!phase) return null;
+                          const PHASE_INFO: Record<string, { color: string; icon: string; hint: string }> = {
+                            create: { color: "#5aacff", icon: "💬", hint: "Chat with your team lead to define the project" },
+                            design: { color: "#e8b040", icon: "📋", hint: "Review the plan — approve it or give feedback" },
+                            execute: { color: "#e89030", icon: "⚡", hint: "Team is building your project" },
+                            complete: { color: "#48cc6a", icon: "✓", hint: "Review results — give feedback or end project" },
+                          };
+                          const info = PHASE_INFO[phase];
+                          if (!info) return null;
+                          return (
+                            <div style={{
+                              padding: "6px 10px", marginBottom: 8,
+                              backgroundColor: info.color + "10",
+                              border: `1px solid ${info.color}30`,
+                              display: "flex", alignItems: "center", gap: 6,
+                              fontSize: 11, fontFamily: "monospace",
+                            }}>
+                              <span>{info.icon}</span>
+                              <span style={{ color: info.color, fontWeight: 700, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.05em" }}>{phase}</span>
+                              <span style={{ color: "#7a6858" }}>{info.hint}</span>
+                            </div>
+                          );
+                        })()}
+
                         {agentState.messages.length === 0 && (
                           <div style={{ textAlign: "center", color: "#5a4838", padding: 20, fontSize: 12 }}>
                             {isTeamMember ? "This agent is managed by the Team Lead" : "Send a message to get started"}
@@ -1568,7 +1790,7 @@ export default function OfficePage() {
                         )}
 
                         {agentState.messages.map((msg) => (
-                          <MessageBubble key={msg.id} msg={msg} onPreview={setPreviewUrl} isTeamLead={agentState?.isTeamLead} isTeamMember={isTeamMember} />
+                          <MessageBubble key={msg.id} msg={msg} onPreview={setPreviewUrl} isTeamLead={agentState?.isTeamLead} isTeamMember={isTeamMember} teamPhase={agentState?.isTeamLead ? getAgentPhase(agent.agentId) : null} />
                         ))}
 
                         {busy && !agentState.pendingApproval && (
@@ -1604,52 +1826,133 @@ export default function OfficePage() {
                       </div>
 
                       {/* Input / Cancel */}
-                      <div style={{
-                        padding: "8px 10px", borderTop: "1px solid #2e2448",
-                        backgroundColor: "#1a1530", flexShrink: 0,
-                      }}>
-                        {isTeamMember ? (
+                      {(() => {
+                        const cardPhase = agentState?.isTeamLead ? getAgentPhase(agent.agentId) : null;
+                        return (
                           <div style={{
-                            textAlign: "center", color: "#5a4838", fontSize: 11, padding: "8px 0", fontFamily: "monospace",
+                            padding: "8px 10px", borderTop: "1px solid #2e2448",
+                            backgroundColor: "#1a1530", flexShrink: 0,
                           }}>
-                            Tasks are assigned by the Team Lead
+                            {isTeamMember ? (
+                              <div style={{
+                                textAlign: "center", color: "#5a4838", fontSize: 11, padding: "8px 0", fontFamily: "monospace",
+                              }}>
+                                Tasks are assigned by the Team Lead
+                              </div>
+                            ) : cardPhase === "execute" && busy ? (
+                              <button
+                                onClick={async () => { if (await confirm("Cancel current work?")) handleCancel(); }}
+                                style={{
+                                  width: "100%", padding: "9px 16px", border: "1px solid #e04848",
+                                  backgroundColor: "#3e1818", color: "#e04848", fontSize: 12, cursor: "pointer", fontFamily: "monospace",
+                                }}
+                              >✕ Cancel current work</button>
+                            ) : cardPhase === "design" && !busy ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <button
+                                  onClick={handleApprovePlan}
+                                  style={{
+                                    width: "100%", padding: "9px 16px", border: "1px solid #48cc6a",
+                                    backgroundColor: "#143a14", color: "#48cc6a", fontSize: 12, cursor: "pointer",
+                                    fontWeight: 700, fontFamily: "monospace",
+                                  }}
+                                >▶ Approve Plan</button>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <input
+                                    value={prompt}
+                                    onChange={(e) => setPrompt(e.target.value)}
+                                    onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
+                                    placeholder="Or give feedback..."
+                                    style={{
+                                      flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
+                                      backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
+                                    }}
+                                  />
+                                  <button
+                                    onClick={handleRunTask}
+                                    disabled={!prompt.trim()}
+                                    style={{
+                                      padding: "9px 14px", border: "none",
+                                      backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
+                                      color: prompt.trim() ? "#16122a" : "#5a4838",
+                                      fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
+                                      fontWeight: 700, fontFamily: "monospace",
+                                    }}
+                                  >Send</button>
+                                </div>
+                              </div>
+                            ) : cardPhase === "complete" && !busy ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <input
+                                    value={prompt}
+                                    onChange={(e) => setPrompt(e.target.value)}
+                                    onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
+                                    placeholder="Request changes..."
+                                    style={{
+                                      flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
+                                      backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
+                                    }}
+                                  />
+                                  <button
+                                    onClick={handleRunTask}
+                                    disabled={!prompt.trim()}
+                                    style={{
+                                      padding: "9px 14px", border: "none",
+                                      backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
+                                      color: prompt.trim() ? "#16122a" : "#5a4838",
+                                      fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
+                                      fontWeight: 700, fontFamily: "monospace",
+                                    }}
+                                  >Send</button>
+                                </div>
+                                <button
+                                  onClick={async () => { if (await confirm("End this project and start a new one?")) handleEndProject(); }}
+                                  style={{
+                                    width: "100%", padding: "9px 16px", border: "1px solid #e89030",
+                                    backgroundColor: "#261a00", color: "#e89030", fontSize: 12, cursor: "pointer",
+                                    fontWeight: 700, fontFamily: "monospace",
+                                  }}
+                                >End Project</button>
+                              </div>
+                            ) : isAgentBusy ? (
+                              <button
+                                onClick={async () => { if (await confirm("Cancel current work?")) handleCancel(); }}
+                                style={{
+                                  width: "100%", padding: "9px 16px", border: "1px solid #e04848",
+                                  backgroundColor: "#3e1818", color: "#e04848", fontSize: 12, cursor: "pointer", fontFamily: "monospace",
+                                }}
+                              >✕ Cancel current work</button>
+                            ) : (
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <input
+                                  value={prompt}
+                                  onChange={(e) => setPrompt(e.target.value)}
+                                  onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
+                                  placeholder="Send a message..."
+                                  style={{
+                                    flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
+                                    backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
+                                  }}
+                                  autoFocus
+                                />
+                                <button
+                                  onClick={handleRunTask}
+                                  disabled={!prompt.trim()}
+                                  style={{
+                                    padding: "9px 14px", border: "none",
+                                    backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
+                                    color: prompt.trim() ? "#16122a" : "#5a4838",
+                                    fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
+                                    fontWeight: 700, fontFamily: "monospace",
+                                    transition: "background-color 0.1s",
+                                  }}
+                                >Send</button>
+                              </div>
+                            )}
                           </div>
-                        ) : isAgentBusy ? (
-                          <button
-                            onClick={async () => { if (await confirm("Cancel current work?")) handleCancel(); }}
-                            style={{
-                              width: "100%", padding: "9px 16px", border: "1px solid #e04848",
-                              backgroundColor: "#3e1818", color: "#e04848", fontSize: 12, cursor: "pointer", fontFamily: "monospace",
-                            }}
-                          >✕ Cancel current work</button>
-                        ) : (
-                          <div style={{ display: "flex", gap: 6 }}>
-                            <input
-                              value={prompt}
-                              onChange={(e) => setPrompt(e.target.value)}
-                              onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
-                              placeholder="Send a message..."
-                              style={{
-                                flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
-                                backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
-                              }}
-                              autoFocus
-                            />
-                            <button
-                              onClick={handleRunTask}
-                              disabled={!prompt.trim()}
-                              style={{
-                                padding: "9px 14px", border: "none",
-                                backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
-                                color: prompt.trim() ? "#16122a" : "#5a4838",
-                                fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
-                                fontWeight: 700, fontFamily: "monospace",
-                                transition: "background-color 0.1s",
-                              }}
-                            >Send</button>
-                          </div>
-                        )}
-                      </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -1772,6 +2075,33 @@ export default function OfficePage() {
               flex: 1, overflowY: "auto", padding: "12px 14px",
               display: "flex", flexDirection: "column",
             }}>
+              {/* Phase banner for team leads (mobile) */}
+              {agentState.isTeamLead && (() => {
+                const phase = getAgentPhase(agentState.agentId);
+                if (!phase) return null;
+                const PHASE_INFO: Record<string, { color: string; icon: string; hint: string }> = {
+                  create: { color: "#5aacff", icon: "💬", hint: "Define the project" },
+                  design: { color: "#e8b040", icon: "📋", hint: "Review the plan" },
+                  execute: { color: "#e89030", icon: "⚡", hint: "Team is building" },
+                  complete: { color: "#48cc6a", icon: "✓", hint: "Review results" },
+                };
+                const info = PHASE_INFO[phase];
+                if (!info) return null;
+                return (
+                  <div style={{
+                    padding: "5px 8px", marginBottom: 8,
+                    backgroundColor: info.color + "10",
+                    border: `1px solid ${info.color}30`,
+                    display: "flex", alignItems: "center", gap: 6,
+                    fontSize: 10, fontFamily: "monospace",
+                  }}>
+                    <span>{info.icon}</span>
+                    <span style={{ color: info.color, fontWeight: 700, textTransform: "uppercase", fontSize: 8, letterSpacing: "0.05em" }}>{phase}</span>
+                    <span style={{ color: "#7a6858" }}>{info.hint}</span>
+                  </div>
+                );
+              })()}
+
               {agentState.messages.length === 0 && (
                 <div style={{ textAlign: "center", color: "#5a4838", padding: 20, fontSize: 12, fontFamily: "monospace" }}>
                   {mobileIsTeamMember ? "This agent is managed by the Team Lead" : "Send a message to get started"}
@@ -1779,7 +2109,7 @@ export default function OfficePage() {
               )}
 
               {agentState.messages.map((msg) => (
-                <MessageBubble key={msg.id} msg={msg} onPreview={setPreviewUrl} isTeamLead={agentState.isTeamLead} isTeamMember={mobileIsTeamMember} />
+                <MessageBubble key={msg.id} msg={msg} onPreview={setPreviewUrl} isTeamLead={agentState.isTeamLead} isTeamMember={mobileIsTeamMember} teamPhase={agentState.isTeamLead ? getAgentPhase(agentState.agentId) : null} />
               ))}
 
               {busy && !agentState.pendingApproval && (
@@ -1814,51 +2144,132 @@ export default function OfficePage() {
             </div>
 
             {/* Input / Cancel */}
-            <div style={{
-              padding: "8px 10px", borderTop: "1px solid #2e2448",
-              backgroundColor: "#1a1530", flexShrink: 0,
-            }}>
-              {mobileIsTeamMember ? (
+            {(() => {
+              const mobilePhase = agentState.isTeamLead ? getAgentPhase(agentState.agentId) : null;
+              return (
                 <div style={{
-                  textAlign: "center", color: "#5a4838", fontSize: 11, padding: "8px 0", fontFamily: "monospace",
+                  padding: "8px 10px", borderTop: "1px solid #2e2448",
+                  backgroundColor: "#1a1530", flexShrink: 0,
                 }}>
-                  Tasks are assigned by the Team Lead
+                  {mobileIsTeamMember ? (
+                    <div style={{
+                      textAlign: "center", color: "#5a4838", fontSize: 11, padding: "8px 0", fontFamily: "monospace",
+                    }}>
+                      Tasks are assigned by the Team Lead
+                    </div>
+                  ) : mobilePhase === "execute" && busy ? (
+                    <button
+                      onClick={async () => { if (await confirm("Cancel current work?")) handleCancel(); }}
+                      style={{
+                        width: "100%", padding: "9px 16px", border: "1px solid #e04848",
+                        backgroundColor: "#3e1818", color: "#e04848", fontSize: 12, cursor: "pointer", fontFamily: "monospace",
+                      }}
+                    >✕ Cancel current work</button>
+                  ) : mobilePhase === "design" && !busy ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <button
+                        onClick={handleApprovePlan}
+                        style={{
+                          width: "100%", padding: "9px 16px", border: "1px solid #48cc6a",
+                          backgroundColor: "#143a14", color: "#48cc6a", fontSize: 12, cursor: "pointer",
+                          fontWeight: 700, fontFamily: "monospace",
+                        }}
+                      >▶ Approve Plan</button>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input
+                          value={prompt}
+                          onChange={(e) => setPrompt(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
+                          placeholder="Or give feedback..."
+                          style={{
+                            flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
+                            backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
+                          }}
+                        />
+                        <button
+                          onClick={handleRunTask}
+                          disabled={!prompt.trim()}
+                          style={{
+                            padding: "9px 14px", border: "none",
+                            backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
+                            color: prompt.trim() ? "#16122a" : "#5a4838",
+                            fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
+                            fontWeight: 700, fontFamily: "monospace",
+                          }}
+                        >Send</button>
+                      </div>
+                    </div>
+                  ) : mobilePhase === "complete" && !busy ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input
+                          value={prompt}
+                          onChange={(e) => setPrompt(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
+                          placeholder="Request changes..."
+                          style={{
+                            flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
+                            backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
+                          }}
+                        />
+                        <button
+                          onClick={handleRunTask}
+                          disabled={!prompt.trim()}
+                          style={{
+                            padding: "9px 14px", border: "none",
+                            backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
+                            color: prompt.trim() ? "#16122a" : "#5a4838",
+                            fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
+                            fontWeight: 700, fontFamily: "monospace",
+                          }}
+                        >Send</button>
+                      </div>
+                      <button
+                        onClick={async () => { if (await confirm("End this project and start a new one?")) handleEndProject(); }}
+                        style={{
+                          width: "100%", padding: "9px 16px", border: "1px solid #e89030",
+                          backgroundColor: "#261a00", color: "#e89030", fontSize: 12, cursor: "pointer",
+                          fontWeight: 700, fontFamily: "monospace",
+                        }}
+                      >End Project</button>
+                    </div>
+                  ) : busy ? (
+                    <button
+                      onClick={async () => { if (await confirm("Cancel current work?")) handleCancel(); }}
+                      style={{
+                        width: "100%", padding: "9px 16px", border: "1px solid #e04848",
+                        backgroundColor: "#3e1818", color: "#e04848", fontSize: 12, cursor: "pointer", fontFamily: "monospace",
+                      }}
+                    >✕ Cancel current work</button>
+                  ) : (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        value={prompt}
+                        onChange={(e) => setPrompt(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
+                        placeholder="Send a message..."
+                        style={{
+                          flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
+                          backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
+                        }}
+                        autoFocus
+                      />
+                      <button
+                        onClick={handleRunTask}
+                        disabled={!prompt.trim()}
+                        style={{
+                          padding: "9px 14px", border: "none",
+                          backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
+                          color: prompt.trim() ? "#16122a" : "#5a4838",
+                          fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
+                          fontWeight: 700, fontFamily: "monospace",
+                        }}
+                      >Send</button>
+                    </div>
+                  )}
                 </div>
-              ) : busy ? (
-                <button
-                  onClick={async () => { if (await confirm("Cancel current work?")) handleCancel(); }}
-                  style={{
-                    width: "100%", padding: "9px 16px", border: "1px solid #e04848",
-                    backgroundColor: "#3e1818", color: "#e04848", fontSize: 12, cursor: "pointer", fontFamily: "monospace",
-                  }}
-                >✕ Cancel current work</button>
-              ) : (
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleRunTask()}
-                    placeholder="Send a message..."
-                    style={{
-                      flex: 1, padding: "9px 12px", border: "1px solid #3d2e54",
-                      backgroundColor: "#16122a", color: "#eddcb8", fontSize: 13, outline: "none",
-                    }}
-                    autoFocus
-                  />
-                  <button
-                    onClick={handleRunTask}
-                    disabled={!prompt.trim()}
-                    style={{
-                      padding: "9px 14px", border: "none",
-                      backgroundColor: prompt.trim() ? "#e8b040" : "#272040",
-                      color: prompt.trim() ? "#16122a" : "#5a4838",
-                      fontSize: 12, cursor: prompt.trim() ? "pointer" : "default",
-                      fontWeight: 700, fontFamily: "monospace",
-                    }}
-                  >Send</button>
-                </div>
-              )}
-            </div>
+              );
+            })()}
           </div>
         );
       })()}

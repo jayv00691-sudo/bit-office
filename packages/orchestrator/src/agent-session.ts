@@ -45,6 +45,7 @@ interface QueuedTask {
   prompt: string;
   repoPath?: string;
   teamContext?: string;
+  phaseOverride?: string;
 }
 
 export interface AgentSessionOpts {
@@ -102,10 +103,17 @@ export class AgentSession {
   /** Short summary of last completed/failed task (for roster context) */
   get lastResult(): string | null { return this._lastResult; }
   private _lastResultText: string | null = null;
+  /** Full output from the last completed task (for plan capture). */
+  private _lastFullOutput: string | null = null;
+  get lastFullOutput(): string | null { return this._lastFullOutput; }
   set isTeamLead(v: boolean) { this._isTeamLead = v; }
+  /** Current phase override for team collaboration phases */
+  currentPhase: string | null = null;
 
   /** Current working directory of the running task (used by worktree logic) */
   get currentWorkingDir(): string | null { return this.currentCwd; }
+  /** The configured workspace root directory */
+  get workspaceDir(): string { return this.workspace; }
 
   /** PID of the running child process (null if not running) */
   get pid(): number | null { return this.process?.pid ?? null; }
@@ -131,7 +139,7 @@ export class AgentSession {
     this._renderPrompt = opts.renderPrompt;
   }
 
-  async runTask(taskId: string, prompt: string, repoPath?: string, teamContext?: string, isUserInitiated = false) {
+  async runTask(taskId: string, prompt: string, repoPath?: string, teamContext?: string, isUserInitiated = false, phaseOverride?: string) {
     // If the user explicitly cancelled this agent, block any automatic restarts
     // (from flushResults, delegation, retry). Only a direct user action clears this.
     if (this._userCancelled && !isUserInitiated) {
@@ -144,7 +152,7 @@ export class AgentSession {
 
     if (this.process) {
       const position = this.taskQueue.length + 1;
-      this.taskQueue.push({ taskId, prompt, repoPath, teamContext });
+      this.taskQueue.push({ taskId, prompt, repoPath, teamContext, phaseOverride });
       this.onEvent({
         type: "task:queued",
         agentId: this.agentId,
@@ -159,6 +167,7 @@ export class AgentSession {
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
 
     this.currentTaskId = taskId;
+    this.currentPhase = phaseOverride ?? null;
     const cwd = repoPath ?? this.workspace;
     this.currentCwd = cwd;
     this.stdoutBuffer = "";
@@ -182,17 +191,27 @@ export class AgentSession {
       }
       // isTeamLead: uses leader template + no tools (only delegates)
       // teamContext: just the roster string (any agent in a team may see it)
+      // Cap originalTask to avoid exceeding CLI argument limits (especially for non-Claude backends)
+      const rawOriginalTask = this._isTeamLead ? (this.originalTask ?? prompt) : "";
+      const originalTask = rawOriginalTask.length > 1500 ? rawOriginalTask.slice(0, 1500) + "\n...(truncated)" : rawOriginalTask;
       const templateVars = {
         name: this.name,
         role: this._isTeamLead ? "Team Lead" : this.role,
         personality: this.personality ? `${this.personality}` : "",
         teamRoster: teamContext ?? "",
-        originalTask: this._isTeamLead ? (this.originalTask ?? prompt) : "",
+        originalTask,
         prompt,
       };
       let fullPrompt: string;
-      if (this._isTeamLead) {
-        fullPrompt = this._renderPrompt(this.hasHistory ? "leader-continue" : "leader-initial", templateVars);
+      if (this._isTeamLead && phaseOverride && ["create", "design", "complete"].includes(phaseOverride)) {
+        // Conversational phases: use continuation template if resuming, full template if first turn
+        const templateName = this.hasHistory ? `leader-${phaseOverride}-continue` : `leader-${phaseOverride}`;
+        fullPrompt = this._renderPrompt(templateName, templateVars);
+      } else if (this._isTeamLead) {
+        // When entering execute phase explicitly, always use leader-initial (full delegation rules)
+        // even if hasHistory is true from previous conversational phases
+        const useInitial = phaseOverride === "execute" || !this.hasHistory;
+        fullPrompt = this._renderPrompt(useInitial ? "leader-initial" : "leader-continue", templateVars);
       } else {
         fullPrompt = this._renderPrompt(this.hasHistory ? "worker-continue" : "worker-initial", templateVars);
       }
@@ -205,7 +224,7 @@ export class AgentSession {
         noTools: this._isTeamLead,
         model: this._isTeamLead ? "sonnet" : undefined,
         verbose,
-        skipResume: this._isTeamLead && this.hasHistory,
+        skipResume: this._isTeamLead && this.hasHistory && phaseOverride !== "create" && phaseOverride !== "design" && phaseOverride !== "complete",
       });
 
       // Log which binary + env state
@@ -416,7 +435,8 @@ export class AgentSession {
             this.hasHistory = true;
             saveSessionId(this.agentId, this.sessionId);
 
-            const { summary, fullOutput, changedFiles } = this.extractResult();
+            const { summary, fullOutput, changedFiles, entryFile, projectDir } = this.extractResult();
+            this._lastFullOutput = fullOutput;
 
             // Preview detection: skip for team leads (they don't create files).
             // Leader preview is handled by the orchestrator when isFinalResult is set.
@@ -433,7 +453,7 @@ export class AgentSession {
               type: "task:done",
               agentId: this.agentId,
               taskId: completedTaskId,
-              result: { summary, fullOutput, changedFiles, diffStat: "", testResult: "unknown", previewUrl, previewPath, tokenUsage },
+              result: { summary, fullOutput, changedFiles, diffStat: "", testResult: "unknown", previewUrl, previewPath, entryFile, projectDir, tokenUsage },
             });
             this.onTaskComplete?.(this.agentId, completedTaskId, summary, true);
             this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, 5000);
@@ -537,13 +557,15 @@ export class AgentSession {
    * Parse stdoutBuffer for structured result (SUMMARY/STATUS/FILES_CHANGED).
    * Falls back to a cleaned-up excerpt of the raw output.
    */
-  private extractResult(): { summary: string; fullOutput: string; changedFiles: string[] } {
+  private extractResult(): { summary: string; fullOutput: string; changedFiles: string[]; entryFile?: string; projectDir?: string } {
     const raw = this.stdoutBuffer || this._lastResultText || "";
     const fullOutput = raw.slice(0, 3000);
 
     // Try to extract structured fields from worker output format
     const summaryMatch = raw.match(/SUMMARY:\s*(.+)/i);
     const filesMatch = raw.match(/FILES_CHANGED:\s*(.+)/i);
+    const entryFileMatch = raw.match(/ENTRY_FILE:\s*(.+)/i);
+    const projectDirMatch = raw.match(/PROJECT_DIR:\s*(.+)/i);
 
     const changedFiles: string[] = [];
     if (filesMatch) {
@@ -554,8 +576,11 @@ export class AgentSession {
       }
     }
 
+    const entryFile = entryFileMatch?.[1]?.trim();
+    const projectDir = projectDirMatch?.[1]?.trim();
+
     if (summaryMatch) {
-      return { summary: summaryMatch[1].trim(), fullOutput, changedFiles };
+      return { summary: summaryMatch[1].trim(), fullOutput, changedFiles, entryFile, projectDir };
     }
 
     // No structured SUMMARY — extract the most meaningful part
@@ -585,20 +610,20 @@ export class AgentSession {
 
     // If output is primarily delegations (leader), summarize the delegation targets
     if (meaningful.length === 0 && delegationTargets.length > 0) {
-      return { summary: `Delegated tasks to ${delegationTargets.join(", ")}`, fullOutput, changedFiles };
+      return { summary: `Delegated tasks to ${delegationTargets.join(", ")}`, fullOutput, changedFiles, entryFile, projectDir };
     }
 
     const lastChunk = meaningful.slice(-5).join("\n").trim();
     const summary = lastChunk.slice(0, 500) || "Task completed";
 
-    return { summary, fullOutput, changedFiles };
+    return { summary, fullOutput, changedFiles, entryFile, projectDir };
   }
 
   private dequeueNext() {
     if (this.taskQueue.length === 0) return;
     const next = this.taskQueue.shift()!;
     setTimeout(() => {
-      this.runTask(next.taskId, next.prompt, next.repoPath, next.teamContext);
+      this.runTask(next.taskId, next.prompt, next.repoPath, next.teamContext, false, next.phaseOverride);
     }, 100);
   }
 
@@ -653,6 +678,18 @@ export class AgentSession {
       this.process = null;
     }
     this.pendingApprovals.clear();
+    saveSessionId(this.agentId, null);
+  }
+
+  /** Reset conversation history so the next task starts fresh (used by End Project). */
+  clearHistory() {
+    this.hasHistory = false;
+    this.sessionId = null;
+    this.originalTask = null;
+    this.currentPhase = null;
+    this._lastResult = null;
+    this._lastResultText = null;
+    this._lastFullOutput = null;
     saveSessionId(this.agentId, null);
   }
 

@@ -7,11 +7,27 @@ Leaders delegate, teammates debate, code gets written — all while you supervis
 
 ## Quick Start
 
+### Use via npx (easiest)
+
 ```bash
 npx bit-office
 ```
 
-That's it. Opens a browser UI, auto-detects installed AI CLIs, generates a pair code for your phone.
+Opens a browser UI, auto-detects installed AI CLIs, generates a pair code for your phone.
+
+### Run from source (3 steps)
+
+```bash
+# 1. Install — checks deps, installs packages, copies .env templates
+git clone https://github.com/anthropics/bit-office.git && cd bit-office
+pnpm bootstrap
+
+# 2. Configure — set your project workspace path
+#    Edit apps/gateway/.env → WORKSPACE=/path/to/your/project
+
+# 3. Start — launches web UI + gateway in one command
+pnpm start:local
+```
 
 ## Features
 
@@ -21,6 +37,7 @@ That's it. Opens a browser UI, auto-detects installed AI CLIs, generates a pair 
 - **Mix & Match Models** — Each agent can run a different AI CLI (Claude Code, Codex, Gemini, Aider, OpenCode). Let Codex lead and review, Claude code, Gemini test — they collaborate on the same project
 - **Mobile PWA** — Install on phone, pair with a 6-digit code, control agents anywhere
 - **Approval Bubbles** — Risky commands (git push, rm -rf, npm install) trigger Yes/No approval on your phone
+- **External CLI Monitor** — Auto-detects AI CLI processes (Claude Code, Codex, etc.) already running on your machine, streams their live conversation into the office UI so you can watch and approve from anywhere
 - **Office Editor** — Drag-and-drop furniture, paint floors/walls, customize your virtual office
 
 ## Run from Source
@@ -40,11 +57,8 @@ The pixel office tileset is not included due to license. Purchase it from [donar
 ```bash
 git clone https://github.com/anthropics/bit-office.git
 cd bit-office
-pnpm install
-
-# Configure workspace (where agents will work)
-cp apps/gateway/.env.example apps/gateway/.env
-# Edit .env — set WORKSPACE to your target project directory
+pnpm bootstrap   # checks deps, installs packages, copies .env templates
+# Edit apps/gateway/.env — set WORKSPACE to your target project directory
 ```
 
 ### Development
@@ -125,17 +139,42 @@ The UI only renders 4 key events to keep things simple:
 | `TASK_DONE` | done | Summary popup |
 | `TASK_FAILED` | error | Error indicator |
 
-### Team Delegation
+### Team Collaboration Phases
+
+When you hire a team, the leader follows a structured 5-phase lifecycle instead of jumping straight to coding:
 
 ```
-User assigns task to Team Lead
-  └─ Lead delegates to workers (@Alex, @Mia, ...)
-       └─ Workers execute in parallel
-            └─ Results collected (20s batch window)
-                 └─ Lead reviews → DONE or one retry round
+CREATE ──► DESIGN ──► EXECUTE ──► COMPLETE ──┐
+  ▲                                          │
+  └──────── End Project ◄────────────────────┘
+                          (or feedback → EXECUTE)
 ```
 
-Safeguards: max 5 delegation depth, max 20 total delegations, budget of 5 rounds.
+| Phase | What happens | User can chat? | Key UI |
+|-------|-------------|----------------|--------|
+| **CREATE** | Leader asks what you want to build | Yes | Normal chat input |
+| **DESIGN** | Leader outputs a `[PLAN]...[/PLAN]` | Yes (feedback) | **Approve Plan** button |
+| **EXECUTE** | Leader delegates to workers | No (Cancel only) | Working indicator |
+| **COMPLETE** | Delivery card with files, preview | Yes (feedback) | **End Project** button |
+
+- **CREATE → DESIGN**: Automatic when the leader outputs a `[PLAN]` block
+- **DESIGN → EXECUTE**: User clicks "Approve Plan"
+- **EXECUTE → COMPLETE**: All workers finish, leader summarizes
+- **COMPLETE → EXECUTE**: User sends feedback (change requests)
+- **COMPLETE → CREATE**: User clicks "End Project" (fresh cycle)
+
+The delivery card in COMPLETE phase shows a fixed-format summary: changed files, entry file, project directory, and a deterministic Preview button.
+
+### Delegation (Execute Phase)
+
+```
+Lead delegates to workers (@Alex, @Mia, ...)
+  └─ Workers execute in parallel
+       └─ Results collected (20s batch window)
+            └─ Lead reviews → DONE or one retry round
+```
+
+Safeguards: max 5 delegation depth, max 20 total delegations, budget of 5 rounds. Delegation is blocked in all phases except EXECUTE.
 
 ## Agent Presets
 

@@ -10,3 +10,6 @@ export type RiskLevel = z.infer<typeof RiskLevelEnum>;
 
 export const DecisionEnum = z.enum(["yes", "no"]);
 export type Decision = z.infer<typeof DecisionEnum>;
+
+export const TeamPhaseEnum = z.enum(["create", "design", "execute", "complete"]);
+export type TeamPhase = z.infer<typeof TeamPhaseEnum>;

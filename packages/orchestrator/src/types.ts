@@ -18,6 +18,8 @@ export interface TaskResultPayload {
   testResult: "passed" | "failed" | "unknown";
   previewUrl?: string;
   previewPath?: string;
+  entryFile?: string;
+  projectDir?: string;
   tokenUsage?: { inputTokens: number; outputTokens: number };
 }
 
@@ -241,4 +243,5 @@ export interface CreateTeamOpts {
 
 export interface RunTaskOpts {
   repoPath?: string;
+  phaseOverride?: string;
 }
