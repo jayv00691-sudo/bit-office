@@ -34,27 +34,29 @@ Opens a browser UI, auto-detects installed AI CLIs, generates a pair code for yo
 
 ### Team Workflow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   You ──► Leader designs plan ──► You approve ──► Dev builds ───┐   │
-│   ▲                                                ▲            │   │
-│   │                                                │   fix loop │   │
-│   │                                                └──────◄─────┤   │
-│   │                                                             ▼   │
-│   │                                    You give    ◄── Preview  ◄── Reviewer
-│   │                                    feedback ──────────────────►  │
-│   │                                         │                       │
-│   └──── End Project ◄──────────────────────┘                       │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["You describe an idea"] --> B["Leader designs plan"]
+    B --> C{"You review"}
+    C -- "Give feedback" --> B
+    C -- "Approve" --> D["Dev builds & self-tests"]
+    D --> E["Reviewer checks code + features"]
+    E -- "FAIL" --> D
+    E -- "PASS" --> F["Preview delivered"]
+    F --> G{"You review result"}
+    G -- "Give feedback" --> D
+    G -- "End Project" --> A
+
+    style A fill:#4a9eff,color:#fff
+    style F fill:#2ecc71,color:#fff
 ```
 
-- **Inner loop**: Dev builds → Reviewer checks → fix if FAIL (up to 3 cycles)
-- **Outer loop**: Preview → you give feedback → Dev rebuilds with changes
-- **Full cycle**: End Project → back to the start, leader designs a new project
+Three loops keep things moving:
+- **Design loop** — Leader proposes a plan, you refine it until you're happy, then approve
+- **Review loop** — Reviewer catches bugs or missing features, Dev fixes (up to 3 cycles)
+- **Feedback loop** — You preview the result and request changes, or end the project and start fresh
 
-The leader acts as Creative Director — designing the product vision (theme, style, user experience), not just listing technical tasks. After you approve the plan, the team executes autonomously with built-in review cycles and budget safeguards.
+The leader acts as Creative Director — designing the product vision (theme, style, user experience), not just listing technical tasks. After you approve, the team executes autonomously with built-in review cycles and budget safeguards.
 
 ### Access Anywhere
 
