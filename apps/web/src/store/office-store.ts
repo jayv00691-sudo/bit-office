@@ -34,6 +34,7 @@ interface AgentState {
   } | null;
   messages: ChatMessage[];
   lastLogLine: string | null;
+  tokenUsage: { inputTokens: number; outputTokens: number };
 }
 
 export interface TeamChatMessage {
@@ -171,6 +172,7 @@ function defaultAgent(agentId: string, name = agentId, role = ""): AgentState {
     pendingApproval: null,
     messages: [],
     lastLogLine: null,
+    tokenUsage: { inputTokens: 0, outputTokens: 0 },
   };
 }
 
@@ -284,6 +286,12 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
           }
           // Skip localStorage persistence for external agents
           if (!event.isExternal) {
+            // Debug: detect isTeamLead loss
+            const updated = agents.get(event.agentId);
+            if (existing?.isTeamLead && !updated?.isTeamLead) {
+              console.warn(`[Store] isTeamLead LOST for ${event.agentId}! event.isTeamLead=${event.isTeamLead}, existing=${existing.isTeamLead}`);
+              console.trace();
+            }
             saveToStorage(agents);
           }
           break;
@@ -347,6 +355,14 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
             break;
           }
 
+          // Accumulate token usage from this task
+          const updatedTokenUsage = event.result.tokenUsage
+            ? {
+                inputTokens: agent.tokenUsage.inputTokens + event.result.tokenUsage.inputTokens,
+                outputTokens: agent.tokenUsage.outputTokens + event.result.tokenUsage.outputTokens,
+              }
+            : agent.tokenUsage;
+
           const newMessages: ChatMessage[] = [
             ...agent.messages,
             {
@@ -365,6 +381,7 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
             pendingApproval: null,
             lastLogLine: null,
             messages: newMessages,
+            tokenUsage: updatedTokenUsage,
           });
           saveToStorage(agents);
           break;
@@ -515,6 +532,17 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
               }],
             });
           }
+          break;
+        }
+        case "TOKEN_UPDATE": {
+          const agent = agents.get(event.agentId) ?? defaultAgent(event.agentId);
+          agents.set(event.agentId, {
+            ...agent,
+            tokenUsage: {
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+            },
+          });
           break;
         }
       }

@@ -446,6 +446,26 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   },
 };
 
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
+function TokenBadge({ inputTokens, outputTokens }: { inputTokens: number; outputTokens: number }) {
+  if (inputTokens === 0 && outputTokens === 0) return null;
+  return (
+    <span style={{
+      fontSize: 8, padding: "1px 4px",
+      backgroundColor: "#48cc6a18", color: "#48cc6a",
+      border: "1px solid #48cc6a40", fontFamily: "monospace",
+      whiteSpace: "nowrap",
+    }} title={`Input: ${inputTokens.toLocaleString()} / Output: ${outputTokens.toLocaleString()}`}>
+      {"\u2191"}{formatTokenCount(inputTokens)} {"\u2193"}{formatTokenCount(outputTokens)}
+    </span>
+  );
+}
+
 function MdContent({ text }: { text: string }) {
   return (
     <ReactMarkdown urlTransform={(url) => url} components={mdComponents}>
@@ -538,6 +558,7 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember }: { msg: Chat
             )}
           </div>
         )}
+        {/* TODO: per-task token usage display disabled for now */}
         {msg.result?.previewUrl && onPreview
           && !isTeamMember
           && (!isTeamLead || msg.isFinalResult)
@@ -1397,6 +1418,7 @@ export default function OfficePage() {
                             border: "1px solid #3b82f650", fontFamily: "monospace", letterSpacing: "0.05em",
                           }}>EXTERNAL</span>
                         )}
+                        {/* TODO: token usage display disabled for now — re-enable when data is verified */}
                       </div>
                       <div style={{ fontSize: 10, color: "#7a6858", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}
                         title={isExternal && agentState?.cwd ? agentState.cwd : undefined}
@@ -1426,7 +1448,7 @@ export default function OfficePage() {
                         : <>{agent.status === "done" ? "✓ " : agent.status === "working" ? "▶ " : ""}{cfg.label}</>
                       }
                     </span>
-                    {agentState?.isTeamLead && (
+                    {agentState?.teamId && (agentState.isTeamLead || !Array.from(agents.values()).some(a => a.teamId === agentState.teamId && a.isTeamLead)) && (
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                         {teamBusy && (
                           <span
@@ -1731,6 +1753,7 @@ export default function OfficePage() {
                   {mobileIsTeamMember && (
                     <span style={{ fontSize: 8, padding: "1px 4px", backgroundColor: "#e8b04020", color: "#e8b040", border: "1px solid #e8b04050", fontFamily: "monospace" }}>TEAM</span>
                   )}
+                  {/* TODO: token usage display disabled for now */}
                 </div>
                 <div style={{ fontSize: 10, color: "#7a6858" }}>{agentState.role}</div>
               </div>

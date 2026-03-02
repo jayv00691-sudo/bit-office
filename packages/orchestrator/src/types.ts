@@ -18,6 +18,7 @@ export interface TaskResultPayload {
   testResult: "passed" | "failed" | "unknown";
   previewUrl?: string;
   previewPath?: string;
+  tokenUsage?: { inputTokens: number; outputTokens: number };
 }
 
 // ---------------------------------------------------------------------------

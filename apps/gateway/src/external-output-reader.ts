@@ -5,6 +5,7 @@ import os from "os";
 
 type OutputCallback = (line: string) => void;
 type StatusCallback = (agentId: string, status: "working" | "idle") => void;
+type TokenUpdateCallback = (agentId: string, inputTokens: number, outputTokens: number) => void;
 
 interface ReaderState {
   agentId: string;
@@ -13,6 +14,8 @@ interface ReaderState {
   backendId: string;
   onOutput: OutputCallback;
   cleanup: () => void;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /** Source file extensions for lsof fallback */
@@ -31,10 +34,16 @@ const SOURCE_EXTS = new Set([
 export class ExternalOutputReader {
   private readers = new Map<string, ReaderState>();
   private onStatus: StatusCallback | null = null;
+  private onTokenUpdate: TokenUpdateCallback | null = null;
 
   /** Set a callback to be notified when an external agent's status changes (driven by JSONL entries) */
   setOnStatus(cb: StatusCallback): void {
     this.onStatus = cb;
+  }
+
+  /** Set a callback to be notified when token usage is detected from JSONL entries */
+  setOnTokenUpdate(cb: TokenUpdateCallback): void {
+    this.onTokenUpdate = cb;
   }
 
   attach(
@@ -54,7 +63,7 @@ export class ExternalOutputReader {
       cleanup = this.startLsofReader(agentId, pid, onOutput);
     }
 
-    this.readers.set(agentId, { agentId, pid, cwd, backendId, onOutput, cleanup });
+    this.readers.set(agentId, { agentId, pid, cwd, backendId, onOutput, cleanup, inputTokens: 0, outputTokens: 0 });
   }
 
   detach(agentId: string): void {
@@ -256,6 +265,20 @@ export class ExternalOutputReader {
     // Assistant messages — extract text blocks (skip thinking blocks)
     if (entry.type === "assistant") {
       const message = entry.message as Record<string, unknown> | undefined;
+      // Accumulate token usage
+      const usage = message?.usage as Record<string, unknown> | undefined;
+      if (usage) {
+        const reader = this.readers.get(agentId);
+        if (reader) {
+          const inp = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+          const out = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+          if (inp > 0 || out > 0) {
+            reader.inputTokens += inp;
+            reader.outputTokens += out;
+            this.onTokenUpdate?.(agentId, reader.inputTokens, reader.outputTokens);
+          }
+        }
+      }
       const stopReason = message?.stop_reason ?? (entry as Record<string, unknown>).stop_reason;
       const content = message?.content as Array<Record<string, unknown>> | undefined;
       if (content && Array.isArray(content)) {

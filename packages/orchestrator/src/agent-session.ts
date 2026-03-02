@@ -82,6 +82,8 @@ export class AgentSession {
   private sandboxMode: "full" | "safe";
   private stdoutBuffer = "";
   private stderrBuffer = "";
+  private taskInputTokens = 0;
+  private taskOutputTokens = 0;
   private hasHistory: boolean;
   private sessionId: string | null;
   private taskQueue: QueuedTask[] = [];
@@ -161,6 +163,8 @@ export class AgentSession {
     this.currentCwd = cwd;
     this.stdoutBuffer = "";
     this.stderrBuffer = "";
+    this.taskInputTokens = 0;
+    this.taskOutputTokens = 0;
 
     this.onEvent({
       type: "task:started",
@@ -308,6 +312,12 @@ export class AgentSession {
                 console.log(`[Agent ${this.name}] Session ID: ${msg.session_id}`);
               }
               if (msg.type === "assistant" && msg.message?.content) {
+                // Accumulate token usage
+                if (msg.message.usage) {
+                  const usage = msg.message.usage;
+                  if (typeof usage.input_tokens === "number") this.taskInputTokens += usage.input_tokens;
+                  if (typeof usage.output_tokens === "number") this.taskOutputTokens += usage.output_tokens;
+                }
                 for (const block of msg.message.content) {
                   if (block.type === "text" && block.text) {
                     this.stdoutBuffer += block.text + "\n";
@@ -416,11 +426,14 @@ export class AgentSession {
 
             this._lastResult = `done: ${summary.slice(0, 120)}`;
             this.setStatus("done");
+            const tokenUsage = (this.taskInputTokens > 0 || this.taskOutputTokens > 0)
+              ? { inputTokens: this.taskInputTokens, outputTokens: this.taskOutputTokens }
+              : undefined;
             this.onEvent({
               type: "task:done",
               agentId: this.agentId,
               taskId: completedTaskId,
-              result: { summary, fullOutput, changedFiles, diffStat: "", testResult: "unknown", previewUrl, previewPath },
+              result: { summary, fullOutput, changedFiles, diffStat: "", testResult: "unknown", previewUrl, previewPath, tokenUsage },
             });
             this.onTaskComplete?.(this.agentId, completedTaskId, summary, true);
             this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, 5000);

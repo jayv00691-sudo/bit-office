@@ -69,7 +69,7 @@ function mapOrchestratorEvent(e: OrchestratorEvent): GatewayEvent | null {
     case "task:queued":
       return { type: "TASK_QUEUED", agentId: e.agentId, taskId: e.taskId, prompt: e.prompt, position: e.position };
     case "agent:created":
-      return { type: "AGENT_CREATED", agentId: e.agentId, name: e.name, role: e.role, palette: e.palette, personality: e.personality, backend: e.backend, isTeamLead: e.isTeamLead, teamId: e.teamId };
+      return { type: "AGENT_CREATED", agentId: e.agentId, name: e.name, role: e.role, palette: e.palette, personality: e.personality, backend: e.backend, isTeamLead: e.isTeamLead || undefined, teamId: e.teamId };
     case "agent:fired":
       return { type: "AGENT_FIRED", agentId: e.agentId };
     case "task:result-returned":
@@ -269,7 +269,7 @@ function handleCommand(parsed: Command) {
           palette: agent.palette,
           personality: undefined,
           backend: agent.backend,
-          isTeamLead: agent.isTeamLead,
+          isTeamLead: agent.isTeamLead || undefined,
           teamId: agent.teamId,
         });
         publishEvent({
@@ -373,6 +373,14 @@ async function main() {
         status,
       });
     }
+  });
+  outputReader.setOnTokenUpdate((agentId, inputTokens, outputTokens) => {
+    publishEvent({
+      type: "TOKEN_UPDATE",
+      agentId,
+      inputTokens,
+      outputTokens,
+    });
   });
 
   // Start process scanner to detect external CLI agents

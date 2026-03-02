@@ -33,6 +33,11 @@ export const ApprovalNeededEvent = z.object({
   riskLevel: RiskLevelEnum,
 });
 
+export const TokenUsage = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+});
+
 export const TaskResultPayload = z.object({
   summary: z.string(),
   fullOutput: z.string().optional(),
@@ -42,6 +47,7 @@ export const TaskResultPayload = z.object({
   nextSuggestion: z.string().optional(),
   previewUrl: z.string().optional(),
   previewPath: z.string().optional(),
+  tokenUsage: TokenUsage.optional(),
 });
 
 export const TaskDoneEvent = z.object({
@@ -115,6 +121,13 @@ export const TaskQueuedEvent = z.object({
   position: z.number(),
 });
 
+export const TokenUpdateEvent = z.object({
+  type: z.literal("TOKEN_UPDATE"),
+  agentId: z.string(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+});
+
 export const GatewayEventSchema = z.discriminatedUnion("type", [
   AgentStatusEvent,
   TaskStartedEvent,
@@ -128,8 +141,10 @@ export const GatewayEventSchema = z.discriminatedUnion("type", [
   TaskResultReturnedEvent,
   TeamChatEvent,
   TaskQueuedEvent,
+  TokenUpdateEvent,
 ]);
 
+export type TokenUsage = z.infer<typeof TokenUsage>;
 export type AgentStatusEvent = z.infer<typeof AgentStatusEvent>;
 export type TaskStartedEvent = z.infer<typeof TaskStartedEvent>;
 export type LogAppendEvent = z.infer<typeof LogAppendEvent>;
@@ -143,4 +158,5 @@ export type AgentFiredEvent = z.infer<typeof AgentFiredEvent>;
 export type TaskResultReturnedEvent = z.infer<typeof TaskResultReturnedEvent>;
 export type TeamChatEvent = z.infer<typeof TeamChatEvent>;
 export type TaskQueuedEvent = z.infer<typeof TaskQueuedEvent>;
+export type TokenUpdateEvent = z.infer<typeof TokenUpdateEvent>;
 export type GatewayEvent = z.infer<typeof GatewayEventSchema>;
