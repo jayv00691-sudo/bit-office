@@ -139,6 +139,20 @@ export const TeamPhaseEvent = z.object({
   leadAgentId: z.string(),
 });
 
+export const AgentDefsEvent = z.object({
+  type: z.literal("AGENT_DEFS"),
+  agents: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    role: z.string(),
+    skills: z.string(),
+    personality: z.string(),
+    palette: z.number(),
+    isBuiltin: z.boolean(),
+    teamRole: z.enum(["dev", "reviewer", "leader"]),
+  })),
+});
+
 export const GatewayEventSchema = z.discriminatedUnion("type", [
   AgentStatusEvent,
   TaskStartedEvent,
@@ -154,6 +168,7 @@ export const GatewayEventSchema = z.discriminatedUnion("type", [
   TaskQueuedEvent,
   TokenUpdateEvent,
   TeamPhaseEvent,
+  AgentDefsEvent,
 ]);
 
 export type TokenUsage = z.infer<typeof TokenUsage>;
@@ -172,4 +187,5 @@ export type TeamChatEvent = z.infer<typeof TeamChatEvent>;
 export type TaskQueuedEvent = z.infer<typeof TaskQueuedEvent>;
 export type TokenUpdateEvent = z.infer<typeof TokenUpdateEvent>;
 export type TeamPhaseEvent = z.infer<typeof TeamPhaseEvent>;
+export type AgentDefsEvent = z.infer<typeof AgentDefsEvent>;
 export type GatewayEvent = z.infer<typeof GatewayEventSchema>;

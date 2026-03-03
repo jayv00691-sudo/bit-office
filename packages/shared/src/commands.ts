@@ -51,8 +51,8 @@ export const OpenFileCommand = z.object({
 
 export const CreateTeamCommand = z.object({
   type: z.literal("CREATE_TEAM"),
-  leadPresetIndex: z.number(),
-  memberPresetIndices: z.array(z.number()),
+  leadId: z.string(),
+  memberIds: z.array(z.string()),
   backends: z.record(z.string(), z.string()).optional(),
 });
 
@@ -87,6 +87,25 @@ export const EndProjectCommand = z.object({
   agentId: z.string(),
 });
 
+export const SaveAgentDefCommand = z.object({
+  type: z.literal("SAVE_AGENT_DEF"),
+  agent: z.object({
+    id: z.string(),
+    name: z.string(),
+    role: z.string(),
+    skills: z.string(),
+    personality: z.string(),
+    palette: z.number(),
+    isBuiltin: z.boolean(),
+    teamRole: z.enum(["dev", "reviewer", "leader"]),
+  }),
+});
+
+export const DeleteAgentDefCommand = z.object({
+  type: z.literal("DELETE_AGENT_DEF"),
+  agentDefId: z.string(),
+});
+
 export const CommandSchema = z.discriminatedUnion("type", [
   RunTaskCommand,
   ApprovalDecisionCommand,
@@ -102,6 +121,8 @@ export const CommandSchema = z.discriminatedUnion("type", [
   KillExternalCommand,
   ApprovePlanCommand,
   EndProjectCommand,
+  SaveAgentDefCommand,
+  DeleteAgentDefCommand,
 ]);
 
 export type RunTaskCommand = z.infer<typeof RunTaskCommand>;
@@ -118,4 +139,6 @@ export type FireTeamCommand = z.infer<typeof FireTeamCommand>;
 export type KillExternalCommand = z.infer<typeof KillExternalCommand>;
 export type ApprovePlanCommand = z.infer<typeof ApprovePlanCommand>;
 export type EndProjectCommand = z.infer<typeof EndProjectCommand>;
+export type SaveAgentDefCommand = z.infer<typeof SaveAgentDefCommand>;
+export type DeleteAgentDefCommand = z.infer<typeof DeleteAgentDefCommand>;
 export type Command = z.infer<typeof CommandSchema>;

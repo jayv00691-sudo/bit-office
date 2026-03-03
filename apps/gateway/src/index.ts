@@ -7,10 +7,10 @@ import { runSetup } from "./setup.js";
 import { detectBackends, getBackend, getAllBackends } from "./backends.js";
 import { createOrchestrator, previewServer, type Orchestrator, type OrchestratorEvent } from "@bit-office/orchestrator";
 import type { Command, GatewayEvent } from "@office/shared";
-import { AGENT_PRESETS } from "@office/shared";
+import { DEFAULT_AGENT_DEFS, type AgentDefinition } from "@office/shared";
 import { nanoid } from "nanoid";
 import { execFile } from "child_process";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 import os from "os";
 import { ProcessScanner } from "./process-scanner.js";
@@ -131,6 +131,34 @@ function createUniqueProjectDir(workspace: string, baseName: string): string {
   console.log(`[Gateway] Created project directory: ${fullPath}`);
   return fullPath;
 }
+
+const AGENTS_FILE = path.join(os.homedir(), ".bit-office", "agents.json");
+
+function loadAgentDefs(): AgentDefinition[] {
+  try {
+    if (existsSync(AGENTS_FILE)) {
+      const raw = JSON.parse(readFileSync(AGENTS_FILE, "utf-8"));
+      if (Array.isArray(raw.agents)) return raw.agents;
+    }
+  } catch (e) {
+    console.log(`[Gateway] Failed to read agents.json: ${e}`);
+  }
+  saveAgentDefs(DEFAULT_AGENT_DEFS);
+  return [...DEFAULT_AGENT_DEFS];
+}
+
+function saveAgentDefs(agents: AgentDefinition[]): void {
+  try {
+    const dir = path.dirname(AGENTS_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(AGENTS_FILE, JSON.stringify({ agents }, null, 2), "utf-8");
+    console.log(`[Gateway] Saved ${agents.length} agent definitions to ${AGENTS_FILE}`);
+  } catch (e) {
+    console.log(`[Gateway] Failed to save agents.json: ${e}`);
+  }
+}
+
+let agentDefs: AgentDefinition[] = [];
 
 // ---------------------------------------------------------------------------
 // Map orchestrator events → GatewayEvent (wire protocol)
@@ -323,45 +351,44 @@ function handleCommand(parsed: Command) {
       break;
     }
     case "CREATE_TEAM": {
-      const { leadPresetIndex, memberPresetIndices, backends } = parsed;
-      const allIndices = [leadPresetIndex, ...memberPresetIndices.filter(i => i !== leadPresetIndex)];
-      console.log(`[Gateway] Creating team: lead=${leadPresetIndex}, members=${memberPresetIndices.join(",")}`);
+      const { leadId, memberIds, backends } = parsed;
+      const allIds = [leadId, ...memberIds.filter(id => id !== leadId)];
+      console.log(`[Gateway] Creating team: lead=${leadId}, members=${memberIds.join(",")}`);
       let leadAgentId: string | null = null;
       const teamId = `team-${nanoid(6)}`;
 
-      for (const idx of allIndices) {
-        const preset = AGENT_PRESETS[idx];
-        if (!preset) continue;
+      for (const defId of allIds) {
+        const def = agentDefs.find(a => a.id === defId);
+        if (!def) { console.log(`[Gateway] Agent def not found: ${defId}`); continue; }
         const agentId = `agent-${nanoid(6)}`;
-        const backendId = backends?.[String(idx)] ?? config.defaultBackend;
+        const backendId = backends?.[defId] ?? config.defaultBackend;
 
-        if (idx === leadPresetIndex) {
+        if (defId === leadId) {
           leadAgentId = agentId;
           orc.setTeamLead(agentId);
         }
 
         orc.createAgent({
           agentId,
-          name: preset.name,
-          role: preset.role,
-          personality: preset.personality,
+          name: def.name,
+          role: def.skills ? `${def.role} — ${def.skills}` : def.role,
+          personality: def.personality,
           backend: backendId,
-          palette: preset.palette,
+          palette: def.palette,
           teamId,
         });
       }
 
       if (leadAgentId) {
-        const leadPreset = AGENT_PRESETS[leadPresetIndex];
+        const leadDef = agentDefs.find(a => a.id === leadId);
         publishEvent({
           type: "TEAM_CHAT",
           fromAgentId: leadAgentId,
-          message: `Team created! ${leadPreset?.name ?? "Lead"} is the Team Lead with ${memberPresetIndices.length} team members.`,
+          message: `Team created! ${leadDef?.name ?? "Lead"} is the Team Lead with ${memberIds.length} team members.`,
           messageType: "status",
           timestamp: Date.now(),
         });
 
-        // Initialize phase system and auto-greet
         publishTeamPhase(teamId, "create", leadAgentId);
         const greetTaskId = nanoid();
         orc.runTask(leadAgentId, greetTaskId, "Greet the user and ask what they would like to build.", { phaseOverride: "create" });
@@ -513,6 +540,36 @@ function handleCommand(parsed: Command) {
           status: ext.status,
         });
       }
+      publishEvent({ type: "AGENT_DEFS", agents: agentDefs });
+      break;
+    }
+    case "SAVE_AGENT_DEF": {
+      const def = parsed.agent as AgentDefinition;
+      const idx = agentDefs.findIndex(a => a.id === def.id);
+      if (idx >= 0) {
+        if (agentDefs[idx].isBuiltin) {
+          def.isBuiltin = true;
+          def.teamRole = agentDefs[idx].teamRole;
+        }
+        agentDefs[idx] = def;
+      } else {
+        def.isBuiltin = false;
+        def.teamRole = "dev";
+        agentDefs.push(def);
+      }
+      saveAgentDefs(agentDefs);
+      publishEvent({ type: "AGENT_DEFS", agents: agentDefs });
+      break;
+    }
+    case "DELETE_AGENT_DEF": {
+      const target = agentDefs.find(a => a.id === parsed.agentDefId);
+      if (target?.isBuiltin) {
+        console.log(`[Gateway] Cannot delete built-in agent: ${parsed.agentDefId}`);
+        break;
+      }
+      agentDefs = agentDefs.filter(a => a.id !== parsed.agentDefId);
+      saveAgentDefs(agentDefs);
+      publishEvent({ type: "AGENT_DEFS", agents: agentDefs });
       break;
     }
   }
@@ -554,6 +611,9 @@ async function main() {
     promptsDir: path.join(os.homedir(), ".bit-office", "prompts"),
     sandboxMode: config.sandboxMode,
   });
+
+  agentDefs = loadAgentDefs();
+  console.log(`[Gateway] Loaded ${agentDefs.length} agent definitions (${agentDefs.filter(a => !a.isBuiltin).length} custom)`);
 
   // Forward orchestrator events to transport channels
   const forwardEvent = (event: OrchestratorEvent) => {

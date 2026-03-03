@@ -8,7 +8,7 @@ import { connect, sendCommand } from "@/lib/connection";
 import { getConnection } from "@/lib/storage";
 import { nanoid } from "nanoid";
 import ReactMarkdown from "react-markdown";
-import { AGENT_PRESETS, LEADER_PRESET_INDEX } from "@/lib/presets";
+import type { AgentDefinition } from "@office/shared";
 import { getCharacterThumbnail } from "@/components/office/sprites/spriteData";
 import { OfficeState } from "@/components/office/engine/officeState";
 import { EditorState } from "@/components/office/editor/editorState";
@@ -837,12 +837,376 @@ const BACKEND_OPTIONS = [
   { id: "opencode", name: "OpenCode", color: "#06b6d4" },
 ];
 
-function HireModal({ onHire, onClose, assetsReady }: {
-  onHire: (name: string, role: string, palette: number, personality: string, backend: string) => void;
+const PERSONALITY_PRESETS = [
+  { label: "Friendly & Casual", value: "You speak in a friendly, casual, encouraging, and natural tone." },
+  { label: "Professional & Concise", value: "You speak formally, professionally, in an organized and concise manner." },
+  { label: "Aggressive & Fast", value: "You are aggressive, action-first, always pursuing speed and efficiency." },
+  { label: "Patient Mentor", value: "You teach patiently, explain the reasoning, and guide like a mentor." },
+];
+
+const ROLE_PRESETS = [
+  "Frontend Dev", "Backend Dev", "Fullstack Dev", "Game Dev",
+  "Data Scientist", "DevOps Engineer", "Mobile Dev", "UI/UX Designer", "QA Engineer",
+] as const;
+
+const SKILLS_MAP: Record<string, string[]> = {
+  "Frontend Dev":    ["React", "Next.js", "CSS", "TypeScript", "Vue", "Tailwind", "HTML", "Webpack"],
+  "Backend Dev":     ["Node.js", "Python", "APIs", "Database", "SQL", "Redis", "GraphQL", "Docker"],
+  "Fullstack Dev":   ["React", "Node.js", "TypeScript", "APIs", "Database", "CSS", "Next.js", "Docker"],
+  "Game Dev":        ["PixiJS", "Three.js", "Canvas", "Pygame", "WebGL", "Unity", "Godot", "TypeScript", "Physics"],
+  "Data Scientist":  ["Python", "Pandas", "ML", "TensorFlow", "Data Viz", "Jupyter", "NumPy", "SQL"],
+  "DevOps Engineer": ["Docker", "K8s", "CI/CD", "AWS", "Terraform", "Linux", "Monitoring", "Bash"],
+  "Mobile Dev":      ["React Native", "Swift", "Kotlin", "Flutter", "iOS", "Android", "TypeScript", "Expo"],
+  "UI/UX Designer":  ["Figma", "CSS", "Design Systems", "Prototyping", "Animation", "Accessibility", "Tailwind"],
+  "QA Engineer":     ["Testing", "Cypress", "Jest", "Playwright", "Automation", "CI/CD", "Performance", "A11y"],
+};
+
+function CreateAgentModal({ onSave, onClose, assetsReady, editAgent }: {
+  onSave: (agent: AgentDefinition) => void;
+  onClose: () => void;
+  assetsReady?: boolean;
+  editAgent?: AgentDefinition | null;
+}) {
+  const [palette, setPalette] = useState(editAgent?.palette ?? 0);
+  const [name, setName] = useState(editAgent?.name ?? "");
+
+  // Role: preset index (-1 = custom)
+  const [rolePresetIndex, setRolePresetIndex] = useState<number>(() => {
+    if (!editAgent?.role) return 0;
+    const idx = ROLE_PRESETS.indexOf(editAgent.role as typeof ROLE_PRESETS[number]);
+    return idx >= 0 ? idx : -1;
+  });
+  const [customRole, setCustomRole] = useState(() => {
+    if (!editAgent?.role) return "";
+    const idx = ROLE_PRESETS.indexOf(editAgent.role as typeof ROLE_PRESETS[number]);
+    return idx >= 0 ? "" : editAgent.role;
+  });
+
+  // Skills: set of selected tags
+  const [selectedSkills, setSelectedSkills] = useState<Set<string>>(() => {
+    if (!editAgent?.skills) return new Set(SKILLS_MAP[ROLE_PRESETS[0]]?.slice(0, 4) ?? []);
+    return new Set(editAgent.skills.split(",").map((s) => s.trim()).filter(Boolean));
+  });
+  const [customSkillInput, setCustomSkillInput] = useState("");
+
+  const currentRole = rolePresetIndex >= 0 ? ROLE_PRESETS[rolePresetIndex] : customRole.trim();
+  const suggestedSkills = rolePresetIndex >= 0 ? (SKILLS_MAP[ROLE_PRESETS[rolePresetIndex]] ?? []) : [];
+
+  const handleRoleChange = (idx: number) => {
+    setRolePresetIndex(idx);
+    if (idx >= 0) {
+      const preset = ROLE_PRESETS[idx];
+      const suggested = SKILLS_MAP[preset] ?? [];
+      // Auto-select first 4 if no matching skills already selected
+      const hasMatching = suggested.some((s) => selectedSkills.has(s));
+      if (!hasMatching) {
+        setSelectedSkills(new Set(suggested.slice(0, 4)));
+      }
+    }
+  };
+
+  const toggleSkill = (skill: string) => {
+    setSelectedSkills((prev) => {
+      const next = new Set(prev);
+      if (next.has(skill)) next.delete(skill);
+      else next.add(skill);
+      return next;
+    });
+  };
+
+  const addCustomSkill = () => {
+    const skill = customSkillInput.trim();
+    if (skill && !selectedSkills.has(skill)) {
+      setSelectedSkills((prev) => new Set(prev).add(skill));
+      setCustomSkillInput("");
+    }
+  };
+
+  const [personalityMode, setPersonalityMode] = useState<number>(() => {
+    if (!editAgent) return 0;
+    const idx = PERSONALITY_PRESETS.findIndex((p) => p.value === editAgent.personality);
+    return idx >= 0 ? idx : 4; // 4 = custom
+  });
+  const [customPersonality, setCustomPersonality] = useState(editAgent?.personality ?? "");
+
+  const currentPersonality = personalityMode < 4
+    ? PERSONALITY_PRESETS[personalityMode].value
+    : customPersonality;
+
+  const handleSave = () => {
+    if (!name.trim()) return;
+    const id = editAgent
+      ? editAgent.id
+      : (name.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-|-$/g, "") || "agent") + `-${nanoid(4)}`;
+    onSave({
+      id,
+      name: name.trim(),
+      role: currentRole,
+      skills: Array.from(selectedSkills).join(", "),
+      personality: currentPersonality,
+      palette,
+      isBuiltin: editAgent?.isBuiltin ?? false,
+      teamRole: editAgent?.teamRole ?? "dev",
+    });
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 110,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          backgroundColor: "#1e1a30", padding: "14px 14px 10px",
+          width: "90%", maxWidth: 340, border: "2px solid #3d2e54",
+          boxShadow: "4px 4px 0px rgba(0,0,0,0.5)",
+          maxHeight: "90vh", overflowY: "auto",
+        }}
+      >
+        <h2 className="px-font" style={{ fontSize: 10, margin: "0 0 10px", textAlign: "center", color: "#e8b040", letterSpacing: "0.05em" }}>
+          {editAgent ? "Edit Agent" : "Create Agent"}
+        </h2>
+
+        {/* Avatar palette selector */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 4, fontFamily: "monospace", letterSpacing: "0.05em" }}>AVATAR</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {[0, 1, 2, 3, 4, 5].map((p) => (
+              <button
+                key={p}
+                onClick={() => setPalette(p)}
+                style={{
+                  padding: 3, border: palette === p ? "2px solid #e8b040" : "2px solid #3d2e54",
+                  backgroundColor: palette === p ? "#382800" : "transparent",
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >
+                <SpriteAvatar palette={p} zoom={2} ready={assetsReady} />
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Name */}
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 3, fontFamily: "monospace", letterSpacing: "0.05em" }}>NAME</div>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Agent name"
+            style={{
+              width: "100%", padding: "6px 8px", fontSize: 11, fontFamily: "monospace",
+              border: "1px solid #3d2e54", backgroundColor: "#14112a", color: "#eddcb8",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
+
+        {/* Role */}
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 3, fontFamily: "monospace", letterSpacing: "0.05em" }}>ROLE</div>
+          <select
+            value={rolePresetIndex}
+            onChange={(e) => handleRoleChange(Number(e.target.value))}
+            style={{
+              width: "100%", padding: "6px 8px", fontSize: 11, fontFamily: "monospace",
+              border: "1px solid #3d2e54", backgroundColor: "#14112a", color: "#eddcb8",
+              boxSizing: "border-box", cursor: "pointer",
+            }}
+          >
+            {ROLE_PRESETS.map((r, i) => (
+              <option key={r} value={i}>{r}</option>
+            ))}
+            <option value={-1}>Custom...</option>
+          </select>
+          {rolePresetIndex === -1 && (
+            <input
+              value={customRole}
+              onChange={(e) => setCustomRole(e.target.value)}
+              placeholder="e.g. Python Expert"
+              style={{
+                width: "100%", padding: "6px 8px", fontSize: 11, fontFamily: "monospace",
+                border: "1px solid #3d2e54", backgroundColor: "#14112a", color: "#eddcb8",
+                boxSizing: "border-box", marginTop: 4,
+              }}
+            />
+          )}
+        </div>
+
+        {/* Skills */}
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 3, fontFamily: "monospace", letterSpacing: "0.05em" }}>SKILLS</div>
+          {/* Suggested skill chips */}
+          {suggestedSkills.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+              {suggestedSkills.map((skill) => {
+                const active = selectedSkills.has(skill);
+                return (
+                  <button
+                    key={skill}
+                    onClick={() => toggleSkill(skill)}
+                    style={{
+                      padding: "3px 8px", fontSize: 10, fontFamily: "monospace",
+                      border: active ? "1px solid #e8b04080" : "1px solid #3d2e54",
+                      backgroundColor: active ? "#382800" : "transparent",
+                      color: active ? "#e8b040" : "#7a6858",
+                      cursor: "pointer",
+                    }}
+                  >{skill}</button>
+                );
+              })}
+            </div>
+          )}
+          {/* Custom-added skills (not in suggested) */}
+          {(() => {
+            const customTags = Array.from(selectedSkills).filter((s) => !suggestedSkills.includes(s));
+            if (customTags.length === 0) return null;
+            return (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+                {customTags.map((skill) => (
+                  <span
+                    key={skill}
+                    style={{
+                      padding: "3px 8px", fontSize: 10, fontFamily: "monospace",
+                      border: "1px solid #5aacff60", backgroundColor: "#182844",
+                      color: "#5aacff", display: "flex", alignItems: "center", gap: 4,
+                    }}
+                  >
+                    {skill}
+                    <span
+                      onClick={() => toggleSkill(skill)}
+                      style={{ cursor: "pointer", fontSize: 12, lineHeight: 1, color: "#5aacff80" }}
+                    >&times;</span>
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
+          {/* Add custom skill */}
+          <div style={{ display: "flex", gap: 4 }}>
+            <input
+              value={customSkillInput}
+              onChange={(e) => setCustomSkillInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustomSkill(); } }}
+              placeholder="Add custom skill..."
+              style={{
+                flex: 1, padding: "5px 8px", fontSize: 10, fontFamily: "monospace",
+                border: "1px solid #3d2e54", backgroundColor: "#14112a", color: "#eddcb8",
+                boxSizing: "border-box",
+              }}
+            />
+            <button
+              onClick={addCustomSkill}
+              style={{
+                padding: "4px 10px", fontSize: 12, fontWeight: 700,
+                border: "1px solid #3d2e54", backgroundColor: "transparent",
+                color: "#7a6858", cursor: "pointer", fontFamily: "monospace",
+              }}
+            >+</button>
+          </div>
+        </div>
+
+        {/* Personality */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 3, fontFamily: "monospace", letterSpacing: "0.05em" }}>PERSONALITY</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {PERSONALITY_PRESETS.map((p, i) => (
+              <label
+                key={i}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "3px 6px",
+                  cursor: "pointer", fontSize: 10, color: personalityMode === i ? "#eddcb8" : "#7a6858",
+                  fontFamily: "monospace",
+                }}
+              >
+                <input
+                  type="radio"
+                  name="personality"
+                  checked={personalityMode === i}
+                  onChange={() => setPersonalityMode(i)}
+                  style={{ accentColor: "#e8b040", cursor: "pointer" }}
+                />
+                {p.label}
+              </label>
+            ))}
+            <label
+              style={{
+                display: "flex", alignItems: "center", gap: 6, padding: "3px 6px",
+                cursor: "pointer", fontSize: 10, color: personalityMode === 4 ? "#eddcb8" : "#7a6858",
+                fontFamily: "monospace",
+              }}
+            >
+              <input
+                type="radio"
+                name="personality"
+                checked={personalityMode === 4}
+                onChange={() => setPersonalityMode(4)}
+                style={{ accentColor: "#e8b040", cursor: "pointer" }}
+              />
+              Custom
+            </label>
+            {personalityMode === 4 && (
+              <textarea
+                value={customPersonality}
+                onChange={(e) => setCustomPersonality(e.target.value)}
+                placeholder="Describe the personality..."
+                rows={2}
+                style={{
+                  width: "100%", padding: "6px 8px", fontSize: 10, fontFamily: "monospace",
+                  border: "1px solid #3d2e54", backgroundColor: "#14112a", color: "#eddcb8",
+                  resize: "vertical", boxSizing: "border-box", marginTop: 2,
+                }}
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Buttons */}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            onClick={handleSave}
+            style={{
+              flex: 1, padding: "8px", border: "1px solid #e8b04060",
+              backgroundColor: "#382800", color: "#e8b040", fontSize: 11,
+              fontWeight: 700, cursor: "pointer", fontFamily: "monospace",
+              opacity: name.trim() ? 1 : 0.4,
+            }}
+            disabled={!name.trim()}
+          >
+            {editAgent ? "Save" : "Create"}
+          </button>
+          <button
+            onClick={onClose}
+            style={{
+              padding: "8px 14px",
+              border: "1px solid #3d2e54", backgroundColor: "transparent",
+              color: "#6a5848", fontSize: 11, cursor: "pointer", fontFamily: "monospace",
+            }}
+          >Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HireModal({ agentDefs, onHire, onCreate, onEdit, onDelete, onClose, assetsReady }: {
+  agentDefs: AgentDefinition[];
+  onHire: (def: AgentDefinition, backend: string) => void;
+  onCreate: () => void;
+  onEdit: (def: AgentDefinition) => void;
+  onDelete: (id: string) => void;
   onClose: () => void;
   assetsReady?: boolean;
 }) {
   const [selectedBackend, setSelectedBackend] = useState("claude");
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+
+  const builtinAgents = agentDefs.filter((a) => a.isBuiltin);
+  const customAgents = agentDefs.filter((a) => !a.isBuiltin);
 
   return (
     <div
@@ -856,8 +1220,9 @@ function HireModal({ onHire, onClose, assetsReady }: {
         onClick={(e) => e.stopPropagation()}
         style={{
           backgroundColor: "#1e1a30", padding: "14px 14px 10px",
-          width: "90%", maxWidth: 320, border: "2px solid #3d2e54",
+          width: "90%", maxWidth: 340, border: "2px solid #3d2e54",
           boxShadow: "4px 4px 0px rgba(0,0,0,0.5)",
+          maxHeight: "90vh", overflowY: "auto",
         }}
       >
         <h2 className="px-font" style={{ fontSize: 10, margin: "0 0 12px", textAlign: "center", color: "#e8b040", letterSpacing: "0.05em" }}>Hire Agent</h2>
@@ -882,31 +1247,92 @@ function HireModal({ onHire, onClose, assetsReady }: {
           </div>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-          {AGENT_PRESETS.map((preset) => (
+        {/* Built-in agents */}
+        <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 4, fontFamily: "monospace", letterSpacing: "0.05em" }}>BUILT-IN AGENTS</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, marginBottom: 8 }}>
+          {builtinAgents.map((def) => (
             <button
-              key={preset.palette}
-              onClick={() => onHire(preset.name, preset.description, preset.palette, preset.personality, selectedBackend)}
+              key={def.id}
+              onClick={() => onHire(def, selectedBackend)}
+              onMouseEnter={(e) => { setHoveredId(def.id); e.currentTarget.style.borderColor = "#e8b04040"; }}
+              onMouseLeave={(e) => { setHoveredId(null); e.currentTarget.style.borderColor = "#3d2e54"; }}
               style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "5px 8px",
+                display: "flex", flexDirection: "column", alignItems: "center",
+                padding: "10px 6px 8px", position: "relative",
                 border: "1px solid #3d2e54", backgroundColor: "transparent",
-                cursor: "pointer", textAlign: "left",
+                cursor: "pointer", textAlign: "center",
+                transition: "border-color 0.15s",
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#272040"; e.currentTarget.style.borderColor = "#e8b04040"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.borderColor = "#3d2e54"; }}
             >
-              <SpriteAvatar palette={preset.palette} zoom={2} ready={assetsReady} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#eddcb8" }}>{preset.name}</div>
-                <div style={{ fontSize: 10, color: "#7a6858" }}>{preset.role} · {preset.description}</div>
-              </div>
+              <SpriteAvatar palette={def.palette} zoom={2} ready={assetsReady} />
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#eddcb8", marginTop: 6, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{def.name}</div>
+              <div style={{ fontSize: 9, color: "#7a6858", marginTop: 2, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{def.role}</div>
+              {hoveredId === def.id && (
+                <span
+                  onClick={(e) => { e.stopPropagation(); onEdit(def); }}
+                  style={{ position: "absolute", top: 4, right: 4, fontSize: 12, color: "#7a6858", cursor: "pointer", padding: "2px 4px" }}
+                  title="Edit"
+                >&#9998;</span>
+              )}
             </button>
           ))}
         </div>
+
+        {/* Custom agents */}
+        {customAgents.length > 0 && (
+          <>
+            <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 4, fontFamily: "monospace", letterSpacing: "0.05em" }}>MY AGENTS</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, marginBottom: 8 }}>
+              {customAgents.map((def) => (
+                <button
+                  key={def.id}
+                  onClick={() => onHire(def, selectedBackend)}
+                  onMouseEnter={(e) => { setHoveredId(def.id); e.currentTarget.style.borderColor = "#e8b04040"; }}
+                  onMouseLeave={(e) => { setHoveredId(null); e.currentTarget.style.borderColor = "#3d2e54"; }}
+                  style={{
+                    display: "flex", flexDirection: "column", alignItems: "center",
+                    padding: "10px 6px 8px", position: "relative",
+                    border: "1px solid #3d2e54", backgroundColor: "transparent",
+                    cursor: "pointer", textAlign: "center",
+                    transition: "border-color 0.15s",
+                  }}
+                >
+                  <SpriteAvatar palette={def.palette} zoom={2} ready={assetsReady} />
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#eddcb8", marginTop: 6, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{def.name}</div>
+                  <div style={{ fontSize: 9, color: "#7a6858", marginTop: 2, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{def.role}</div>
+                  {hoveredId === def.id && (
+                    <span style={{ position: "absolute", top: 4, right: 4, display: "flex", gap: 2, alignItems: "center" }}>
+                      <span
+                        onClick={(e) => { e.stopPropagation(); onEdit(def); }}
+                        style={{ fontSize: 12, color: "#7a6858", cursor: "pointer", padding: "2px 4px" }}
+                        title="Edit"
+                      >&#9998;</span>
+                      <span
+                        onClick={(e) => { e.stopPropagation(); onDelete(def.id); }}
+                        style={{ fontSize: 13, color: "#e04848", cursor: "pointer", padding: "2px 4px", fontWeight: 700 }}
+                        title="Delete"
+                      >&times;</span>
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Create + Cancel */}
+        <button
+          onClick={onCreate}
+          style={{
+            width: "100%", marginBottom: 4, padding: "7px",
+            border: "1px solid #e8b04060", backgroundColor: "transparent",
+            color: "#e8b040", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "monospace",
+          }}
+        >+ Create Agent</button>
         <button
           onClick={onClose}
           style={{
-            width: "100%", marginTop: 8, padding: "7px",
+            width: "100%", padding: "7px",
             border: "1px solid #3d2e54", backgroundColor: "transparent",
             color: "#6a5848", fontSize: 11, cursor: "pointer", fontFamily: "monospace",
           }}
@@ -1202,30 +1628,40 @@ function AccordionHeader({
   );
 }
 
-function HireTeamModal({ onCreateTeam, onClose, assetsReady }: {
-  onCreateTeam: (leadIndex: number, memberIndices: number[], backends: Record<string, string>) => void;
+function HireTeamModal({ agentDefs, onCreateTeam, onClose, assetsReady }: {
+  agentDefs: AgentDefinition[];
+  onCreateTeam: (leadId: string, memberIds: string[], backends: Record<string, string>) => void;
   onClose: () => void;
   assetsReady?: boolean;
 }) {
-  const leadIndex = LEADER_PRESET_INDEX; // Marcus is always the leader — not changeable
-  const [memberChecked, setMemberChecked] = useState<boolean[]>(AGENT_PRESETS.map((_, i) => i !== leadIndex));
+  const leader = agentDefs.find((a) => a.teamRole === "leader");
+  const reviewer = agentDefs.find((a) => a.teamRole === "reviewer");
+  const devAgents = agentDefs.filter((a) => a.teamRole === "dev");
+
+  const [memberChecked, setMemberChecked] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    for (const d of devAgents) init[d.id] = true;
+    return init;
+  });
   const [backends, setBackends] = useState<Record<string, string>>({});
 
-  const toggleMember = (idx: number) => {
-    if (idx === leadIndex) return; // Can't uncheck the lead
-    setMemberChecked((prev) => {
-      const next = [...prev];
-      next[idx] = !next[idx];
-      return next;
-    });
+  const toggleMember = (id: string) => {
+    setMemberChecked((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const handleCreate = () => {
-    const memberIndices = memberChecked
-      .map((checked, i) => (checked && i !== leadIndex) ? i : -1)
-      .filter((i) => i >= 0);
-    onCreateTeam(leadIndex, memberIndices, backends);
+    if (!leader) return;
+    const memberIds = devAgents
+      .filter((d) => memberChecked[d.id])
+      .map((d) => d.id);
+    if (reviewer) memberIds.push(reviewer.id);
+    onCreateTeam(leader.id, memberIds, backends);
   };
+
+  // Fixed rows (leader + reviewer) + toggleable dev rows
+  const fixedRows: { def: AgentDefinition; label: string }[] = [];
+  if (leader) fixedRows.push({ def: leader, label: "LEAD" });
+  if (reviewer) fixedRows.push({ def: reviewer, label: "REVIEWER" });
 
   return (
     <div
@@ -1241,43 +1677,35 @@ function HireTeamModal({ onCreateTeam, onClose, assetsReady }: {
           backgroundColor: "#1e1a30", padding: "14px 14px 10px",
           width: "90%", maxWidth: 380, border: "2px solid #3d2e54",
           boxShadow: "4px 4px 0px rgba(0,0,0,0.5)",
+          maxHeight: "90vh", overflowY: "auto",
         }}
       >
         <h2 className="px-font" style={{ fontSize: 10, margin: "0 0 12px", textAlign: "center", color: "#e8b040", letterSpacing: "0.05em" }}>Hire Team</h2>
 
         <div style={{ fontSize: 9, color: "#7a6858", marginBottom: 6, fontFamily: "monospace", letterSpacing: "0.05em" }}>SELECT TEAM MEMBERS</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
-          {AGENT_PRESETS.map((preset, idx) => (
-            <button
-              key={preset.palette}
-              onClick={() => { if (idx !== leadIndex) toggleMember(idx); }}
+          {/* Fixed rows: leader and reviewer */}
+          {fixedRows.map(({ def, label }) => (
+            <div
+              key={def.id}
               style={{
                 display: "flex", alignItems: "center", gap: 8, padding: "5px 8px",
-                border: idx === leadIndex ? "1px solid #e8903070" : "1px solid #3d2e54",
-                backgroundColor: idx === leadIndex ? "#261a00" : "transparent",
-                cursor: idx === leadIndex ? "default" : "pointer", textAlign: "left",
+                border: "1px solid #e8903070",
+                backgroundColor: "#261a00",
+                textAlign: "left",
               }}
             >
-              <SpriteAvatar palette={preset.palette} zoom={2} ready={assetsReady} />
+              <SpriteAvatar palette={def.palette} zoom={2} ready={assetsReady} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#eddcb8" }}>
-                  {preset.name} {idx === leadIndex && <span style={{ color: "#e89030", fontSize: 8, fontFamily: "monospace" }}>LEAD</span>}
+                  {def.name} <span style={{ color: "#e89030", fontSize: 8, fontFamily: "monospace" }}>{label}</span>
                 </div>
-                <div style={{ fontSize: 10, color: "#7a6858" }}>{preset.role}</div>
+                <div style={{ fontSize: 10, color: "#7a6858" }}>{def.role}</div>
               </div>
-              {idx !== leadIndex && (
-                <input
-                  type="checkbox"
-                  checked={memberChecked[idx]}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => toggleMember(idx)}
-                  style={{ cursor: "pointer", accentColor: "#e8b040" }}
-                />
-              )}
               <select
-                value={backends[String(idx)] ?? "claude"}
+                value={backends[def.id] ?? "claude"}
                 onClick={(e) => e.stopPropagation()}
-                onChange={(e) => setBackends((prev) => ({ ...prev, [String(idx)]: e.target.value }))}
+                onChange={(e) => setBackends((prev) => ({ ...prev, [def.id]: e.target.value }))}
                 style={{
                   padding: "2px 4px", border: "1px solid #3d2e54",
                   backgroundColor: "#1a1530", color: "#9a8a68", fontSize: 9, cursor: "pointer", fontFamily: "monospace",
@@ -1287,8 +1715,56 @@ function HireTeamModal({ onCreateTeam, onClose, assetsReady }: {
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
               </select>
-            </button>
+            </div>
           ))}
+
+          {/* Toggleable dev cards — grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4 }}>
+            {devAgents.map((def) => {
+              const checked = !!memberChecked[def.id];
+              return (
+                <button
+                  key={def.id}
+                  onClick={() => toggleMember(def.id)}
+                  style={{
+                    display: "flex", flexDirection: "column", alignItems: "center",
+                    padding: "10px 6px 8px",
+                    border: checked ? "1px solid #e8b04060" : "1px solid #3d2e54",
+                    backgroundColor: "transparent",
+                    cursor: "pointer", textAlign: "center",
+                    opacity: checked ? 1 : 0.5,
+                    transition: "opacity 0.15s, border-color 0.15s",
+                  }}
+                >
+                  <SpriteAvatar palette={def.palette} zoom={2} ready={assetsReady} />
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#eddcb8", marginTop: 6, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{def.name}</div>
+                  <div style={{ fontSize: 9, color: "#7a6858", marginTop: 2, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{def.role}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleMember(def.id)}
+                      style={{ cursor: "pointer", accentColor: "#e8b040" }}
+                    />
+                    <select
+                      value={backends[def.id] ?? "claude"}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setBackends((prev) => ({ ...prev, [def.id]: e.target.value }))}
+                      style={{
+                        padding: "2px 4px", border: "1px solid #3d2e54",
+                        backgroundColor: "#1a1530", color: "#9a8a68", fontSize: 9, cursor: "pointer", fontFamily: "monospace",
+                      }}
+                    >
+                      {BACKEND_OPTIONS.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 6 }}>
@@ -1298,7 +1774,9 @@ function HireTeamModal({ onCreateTeam, onClose, assetsReady }: {
               flex: 1, padding: "9px", border: "1px solid #e8b04060",
               backgroundColor: "#382800", color: "#e8b040", fontSize: 11,
               fontWeight: 700, cursor: "pointer", fontFamily: "monospace",
+              opacity: leader ? 1 : 0.4,
             }}
+            disabled={!leader}
           >Create Team</button>
           <button
             onClick={onClose}
@@ -1316,7 +1794,7 @@ function HireTeamModal({ onCreateTeam, onClose, assetsReady }: {
 
 export default function OfficePage() {
   const router = useRouter();
-  const { agents, connected, addUserMessage, teamMessages, clearTeamMessages, teamPhases } = useOfficeStore();
+  const { agents, connected, addUserMessage, teamMessages, clearTeamMessages, teamPhases, agentDefs } = useOfficeStore();
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [celebration, setCelebration] = useState<{ previewUrl?: string; previewPath?: string; previewCmd?: string; previewPort?: number; projectDir?: string; entryFile?: string } | null>(null);
@@ -1324,6 +1802,8 @@ export default function OfficePage() {
   const { confirm, modal: confirmModal } = useConfirm();
   const [showHireModal, setShowHireModal] = useState(false);
   const [showHireTeamModal, setShowHireTeamModal] = useState(false);
+  const [showCreateAgent, setShowCreateAgent] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<AgentDefinition | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [mobileTeamOpen, setMobileTeamOpen] = useState(false);
   const [expandedSection, setExpandedSection] = useState<"team" | "agents" | "external">("team");
@@ -1477,25 +1957,35 @@ export default function OfficePage() {
     setChatOpen(true);
   }, []);
 
-  const handleHire = useCallback((name: string, role: string, palette: number, personality: string, backend: string) => {
+  const handleHire = useCallback((def: AgentDefinition, backend: string) => {
     const existing = Array.from(agents.values()).filter(
-      (a) => a.name === name || a.name.match(new RegExp(`^${name} \\d+$`))
+      (a) => a.name === def.name || a.name.match(new RegExp(`^${def.name} \\d+$`))
     );
-    const displayName = existing.length === 0 ? name : `${name} ${existing.length + 1}`;
+    const displayName = existing.length === 0 ? def.name : `${def.name} ${existing.length + 1}`;
     const agentId = `agent-${nanoid(6)}`;
-    sendCommand({ type: "CREATE_AGENT", agentId, name: displayName, role, palette, personality, backend });
+    sendCommand({ type: "CREATE_AGENT", agentId, name: displayName, role: def.skills ? `${def.role} — ${def.skills}` : def.role, palette: def.palette, personality: def.personality, backend });
     setSelectedAgent(agentId);
     setChatOpen(true);
     setShowHireModal(false);
   }, [agents]);
 
-  const handleCreateTeam = useCallback((leadIndex: number, memberIndices: number[], backends: Record<string, string>) => {
-    sendCommand({ type: "CREATE_TEAM", leadPresetIndex: leadIndex, memberPresetIndices: memberIndices, backends });
+  const handleCreateTeam = useCallback((leadId: string, memberIds: string[], backends: Record<string, string>) => {
+    sendCommand({ type: "CREATE_TEAM", leadId, memberIds, backends });
     setShowHireTeamModal(false);
     setExpandedSection("team");
     setSelectedAgent(null);
     setChatOpen(false);
     setMobileTeamOpen(true);
+  }, []);
+
+  const handleSaveAgentDef = useCallback((def: AgentDefinition) => {
+    sendCommand({ type: "SAVE_AGENT_DEF", agent: def });
+    setShowCreateAgent(false);
+    setEditingAgent(null);
+  }, []);
+
+  const handleDeleteAgentDef = useCallback((agentDefId: string) => {
+    sendCommand({ type: "DELETE_AGENT_DEF", agentDefId });
   }, []);
 
   const handleFire = useCallback(async (agentId: string) => {
@@ -1745,8 +2235,10 @@ export default function OfficePage() {
               return (
                 <div key={agent.agentId} style={{
                   display: "flex", flexDirection: "column",
-                  borderBottom: "1px solid #272040",
-                  borderLeft: "none",
+                  margin: "3px 6px",
+                  border: isExpanded ? "1px solid #e8b04040" : "1px solid #2e2448",
+                  backgroundColor: isExpanded ? "#1e1a34" : "#1a1530",
+                  transition: "border-color 0.2s, background-color 0.2s",
                 }}>
                   {/* Collapsed row — always visible */}
                   <button
@@ -2588,11 +3080,28 @@ export default function OfficePage() {
       )}
 
       {showHireModal && (
-        <HireModal onHire={handleHire} onClose={() => setShowHireModal(false)} assetsReady={assetsReady} />
+        <HireModal
+          agentDefs={agentDefs}
+          onHire={handleHire}
+          onCreate={() => { setShowHireModal(false); setEditingAgent(null); setShowCreateAgent(true); }}
+          onEdit={(def) => { setShowHireModal(false); setEditingAgent(def); setShowCreateAgent(true); }}
+          onDelete={handleDeleteAgentDef}
+          onClose={() => setShowHireModal(false)}
+          assetsReady={assetsReady}
+        />
       )}
 
       {showHireTeamModal && (
-        <HireTeamModal onCreateTeam={handleCreateTeam} onClose={() => setShowHireTeamModal(false)} assetsReady={assetsReady} />
+        <HireTeamModal agentDefs={agentDefs} onCreateTeam={handleCreateTeam} onClose={() => setShowHireTeamModal(false)} assetsReady={assetsReady} />
+      )}
+
+      {showCreateAgent && (
+        <CreateAgentModal
+          onSave={handleSaveAgentDef}
+          onClose={() => { setShowCreateAgent(false); setEditingAgent(null); }}
+          assetsReady={assetsReady}
+          editAgent={editingAgent}
+        />
       )}
 
       {officeStateRef.current && (

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AgentStatus, GatewayEvent, TaskResultPayload } from "@office/shared";
+import type { AgentStatus, GatewayEvent, TaskResultPayload, AgentDefinition } from "@office/shared";
 
 export interface ChatMessage {
   id: string;
@@ -57,6 +57,7 @@ interface OfficeStore {
   agents: Map<string, AgentState>;
   teamMessages: TeamChatMessage[];
   teamPhases: Map<string, TeamPhaseState>;
+  agentDefs: AgentDefinition[];
   connected: boolean;
   hydrated: boolean;
   setConnected: (c: boolean) => void;
@@ -209,6 +210,7 @@ function defaultAgent(agentId: string, name = agentId, role = ""): AgentState {
 
 export const useOfficeStore = create<OfficeStore>((set, get) => ({
   agents: new Map(),
+  agentDefs: [],
   teamMessages: [],
   teamPhases: new Map(),
   connected: false,
@@ -601,6 +603,9 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
             },
           });
           break;
+        }
+        case "AGENT_DEFS": {
+          return { agents, agentDefs: event.agents };
         }
         case "TEAM_PHASE": {
           const teamPhases = new Map(state.teamPhases);
