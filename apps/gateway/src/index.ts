@@ -62,25 +62,54 @@ function showPairCode() {
  * Falls back to "project" if no meaningful name is found.
  */
 function extractProjectName(planText: string): string {
-  const patterns = [
-    // "Goal: Build a match-3 game" or "目标：做一个消消乐"
+  function toKebab(s: string): string {
+    return s
+      .toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fff\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+  }
+  // Trim kebab at last complete word within maxLen
+  function trimKebab(s: string, maxLen: number): string {
+    if (s.length <= maxLen) return s;
+    const cut = s.lastIndexOf("-", maxLen);
+    return cut > 2 ? s.slice(0, cut) : s.slice(0, maxLen);
+  }
+
+  // Priority 1: CONCEPT with a short name before an em-dash
+  // e.g. "CONCEPT: Slime Tower — a vertical climbing game"
+  const namedConcept = planText.match(/CONCEPT\s*[:：]\s*(?:A\s+|An\s+|The\s+)?(.+?)\s*[—–]\s/i);
+  if (namedConcept) {
+    const kebab = toKebab(namedConcept[1].trim());
+    if (kebab.length >= 2 && kebab.length <= 30) return kebab;
+  }
+
+  // Priority 2: Quoted project name anywhere in plan
+  // e.g. "Build "Rooftop Runner", a side-scrolling game"
+  const quoted = planText.match(/["""\u201c]([^"""\u201d]{2,25})["""\u201d]/);
+  if (quoted) {
+    const kebab = toKebab(quoted[1].trim());
+    if (kebab.length >= 2) return trimKebab(kebab, 25);
+  }
+
+  // Priority 3: CONCEPT description (shorter, more stop words)
+  const concept = planText.match(/CONCEPT\s*[:：]\s*(?:A\s+|An\s+|The\s+)?(.+?)(?:\s+(?:for|that|which|where|with|featuring|aimed|designed|，|。)\b|[—–.\n])/i);
+  if (concept) {
+    const kebab = toKebab(concept[1].trim());
+    if (kebab.length >= 2) return trimKebab(kebab, 25);
+  }
+
+  const fallbacks = [
     /(?:goal|project|目标|项目)\s*[:：]\s*(.+)/i,
     /\[PLAN\][\s\S]*?(?:goal|project|目标)\s*[:：]\s*(.+)/i,
-    // "Build a match-3 game with ..."
-    /(?:build|create|make|开发|做|构建)\s+(?:a\s+)?(.+?)(?:\s+(?:with|using|that|for|，|。)\b|[.\n])/i,
+    /(?:build|create|make|开发|做|构建)\s+(?:a\s+)?(.+?)(?:\s+(?:with|using|that|for|where|，|。)\b|[.\n])/i,
   ];
-  for (const re of patterns) {
+  for (const re of fallbacks) {
     const m = planText.match(re);
     if (m) {
-      const raw = m[1].trim().slice(0, 40);
-      // Keep letters, numbers, CJK chars, spaces → convert to kebab-case
-      const kebab = raw
-        .toLowerCase()
-        .replace(/[^a-z0-9\u4e00-\u9fff\s-]/g, "")
-        .replace(/\s+/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-|-$/g, "");
-      if (kebab.length >= 2) return kebab;
+      const kebab = toKebab(m[1].trim());
+      if (kebab.length >= 2) return trimKebab(kebab, 25);
     }
   }
   return "project";
@@ -262,6 +291,11 @@ function handleCommand(parsed: Command) {
         const cwd = parsed.cwd ?? config.defaultWorkspace;
         console.log(`[Gateway] SERVE_PREVIEW (cmd): "${parsed.previewCmd}" port=${parsed.previewPort} cwd=${cwd}`);
         previewServer.runCommand(parsed.previewCmd, cwd, parsed.previewPort);
+      } else if (parsed.previewCmd) {
+        // Desktop/CLI app: launch process without port (no browser preview)
+        const cwd = parsed.cwd ?? config.defaultWorkspace;
+        console.log(`[Gateway] SERVE_PREVIEW (launch): "${parsed.previewCmd}" cwd=${cwd}`);
+        previewServer.launchProcess(parsed.previewCmd, cwd);
       } else if (parsed.filePath) {
         console.log(`[Gateway] SERVE_PREVIEW (static): ${parsed.filePath}`);
         previewServer.serve(parsed.filePath);

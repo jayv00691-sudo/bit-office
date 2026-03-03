@@ -528,8 +528,7 @@ export class AgentSession {
         previewUrl = previewServer.runCommand(result.previewCmd, cwd, result.previewPort);
         if (previewUrl) return { previewUrl, previewPath: undefined };
       } else {
-        // Desktop/CLI app: launch it (no browser preview)
-        previewServer.launchProcess(result.previewCmd, cwd);
+        // Desktop/CLI app: don't auto-launch — user clicks Launch button on the frontend
         return { previewUrl: undefined, previewPath: undefined };
       }
     }
@@ -545,16 +544,8 @@ export class AgentSession {
           previewUrl = previewServer.serve(previewPath);
           if (previewUrl) return { previewUrl, previewPath };
         }
-      } else {
-        // Non-HTML entry file (e.g. game.py) — try to launch it
-        const ext = path.extname(result.entryFile).toLowerCase();
-        const runners: Record<string, string> = { ".py": "python3", ".js": "node", ".rb": "ruby", ".sh": "bash" };
-        const runner = runners[ext];
-        if (runner) {
-          previewServer.launchProcess(`${runner} ${result.entryFile}`, cwd);
-          return { previewUrl: undefined, previewPath: undefined };
-        }
       }
+      // Non-HTML entry file (e.g. game.py): don't auto-launch — user clicks Launch button
     }
 
     // 3) Explicit PREVIEW: http://... in output

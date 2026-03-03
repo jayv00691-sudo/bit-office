@@ -238,25 +238,35 @@ function ConfettiOverlay() {
 }
 
 /** Build a SERVE_PREVIEW command from result fields */
-function buildPreviewCommand(result: { previewPath?: string; previewCmd?: string; previewPort?: number; projectDir?: string }) {
+function buildPreviewCommand(result: { previewPath?: string; previewCmd?: string; previewPort?: number; projectDir?: string; entryFile?: string }) {
   if (result.previewCmd && result.previewPort) {
     return { type: "SERVE_PREVIEW" as const, previewCmd: result.previewCmd, previewPort: result.previewPort, cwd: result.projectDir };
   }
   if (result.previewPath) {
     return { type: "SERVE_PREVIEW" as const, filePath: result.previewPath };
   }
+  // Desktop/CLI app: PREVIEW_CMD without port, or non-HTML entry file
+  if (result.previewCmd) {
+    return { type: "SERVE_PREVIEW" as const, previewCmd: result.previewCmd, cwd: result.projectDir };
+  }
+  if (result.entryFile && !/\.html?$/i.test(result.entryFile)) {
+    return { type: "SERVE_PREVIEW" as const, previewCmd: result.entryFile, cwd: result.projectDir };
+  }
   return null;
 }
 
-function CelebrationModal({ previewUrl, previewPath, onPreview, onDismiss, previewCmd, previewPort, projectDir }: {
+function CelebrationModal({ previewUrl, previewPath, onPreview, onDismiss, previewCmd, previewPort, projectDir, entryFile }: {
   previewUrl?: string;
   previewPath?: string;
   previewCmd?: string;
   previewPort?: number;
   projectDir?: string;
+  entryFile?: string;
   onPreview: (url: string) => void;
   onDismiss: () => void;
 }) {
+  // Desktop/CLI app: has a launch command but no browser preview URL
+  const canLaunch = !previewUrl && buildPreviewCommand({ previewPath, previewCmd, previewPort, projectDir, entryFile });
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 9999,
@@ -281,7 +291,7 @@ function CelebrationModal({ previewUrl, previewPath, onPreview, onDismiss, previ
           {previewUrl && (
             <button
               onClick={() => {
-                const cmd = buildPreviewCommand({ previewPath, previewCmd, previewPort, projectDir });
+                const cmd = buildPreviewCommand({ previewPath, previewCmd, previewPort, projectDir, entryFile });
                 if (cmd) sendCommand(cmd);
                 onPreview(previewUrl);
               }}
@@ -292,6 +302,22 @@ function CelebrationModal({ previewUrl, previewPath, onPreview, onDismiss, previ
               }}
             >
               ▶ Preview
+            </button>
+          )}
+          {canLaunch && (
+            <button
+              onClick={() => {
+                const cmd = buildPreviewCommand({ previewPath, previewCmd, previewPort, projectDir, entryFile });
+                if (cmd) sendCommand(cmd);
+                onDismiss();
+              }}
+              style={{
+                padding: "9px 20px", border: "1px solid #5aacff",
+                backgroundColor: "#0f1e3a", color: "#5aacff",
+                fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "monospace",
+              }}
+            >
+              ▶ Launch
             </button>
           )}
           <button
@@ -631,7 +657,7 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
             </div>
           )}
 
-          {/* Preview button — deterministic: always show in complete phase */}
+          {/* Preview button — for web projects (has previewUrl) */}
           {r.previewUrl && onPreview && (
             <div style={{
               padding: "10px 14px",
@@ -651,6 +677,28 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
                 }}
               >
                 ▶ Preview Result
+              </button>
+            </div>
+          )}
+          {/* Launch button — for desktop/CLI apps (no previewUrl but has a runnable command) */}
+          {!r.previewUrl && buildPreviewCommand(r) && (
+            <div style={{
+              padding: "10px 14px",
+              borderTop: "1px solid #48cc6a20",
+            }}>
+              <button
+                onClick={() => {
+                  const cmd = buildPreviewCommand(r);
+                  if (cmd) sendCommand(cmd);
+                }}
+                style={{
+                  width: "100%", padding: "10px 16px",
+                  backgroundColor: "#0f1e3a", color: "#5aacff",
+                  border: "1px solid #5aacff50", cursor: "pointer",
+                  fontSize: 12, fontWeight: 700, fontFamily: "monospace",
+                }}
+              >
+                ▶ Launch App
               </button>
             </div>
           )}
@@ -949,13 +997,116 @@ function TeamChatView({ messages, agents, assetsReady }: {
   );
 }
 
+/** Shared card component for team activity messages (used by both toast and log) */
+function TeamActivityCard({ msg, agents, assetsReady, maxChars = 150, shadow }: {
+  msg: TeamChatMessage;
+  agents: Map<string, { name: string; palette?: number }>;
+  assetsReady?: boolean;
+  maxChars?: number;
+  shadow?: boolean;
+}) {
+  const cfg = TEAM_MSG_COLORS[msg.messageType] ?? TEAM_MSG_COLORS.status;
+  const fromAgent = agents.get(msg.fromAgentId);
+  const toAgent = msg.toAgentId ? agents.get(msg.toAgentId) : undefined;
+  const msgText = msg.message ?? "";
+
+  return (
+    <div style={{
+      padding: "8px 10px",
+      backgroundColor: cfg.bg, borderLeft: `2px solid ${cfg.border}`,
+      border: `1px solid ${cfg.border}40`,
+      boxShadow: shadow ? "0 2px 12px rgba(0,0,0,0.5)" : undefined,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        {fromAgent?.palette !== undefined && (
+          <SpriteAvatar palette={fromAgent.palette} zoom={1} ready={assetsReady} />
+        )}
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#eddcb8" }}>
+          {msg.fromAgentName ?? msg.fromAgentId}
+        </span>
+        {msg.toAgentName && (
+          <>
+            <span style={{ fontSize: 10, color: "#6a5848" }}>&rarr;</span>
+            {toAgent?.palette !== undefined && (
+              <SpriteAvatar palette={toAgent.palette} zoom={1} ready={assetsReady} />
+            )}
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#eddcb8" }}>
+              {msg.toAgentName}
+            </span>
+          </>
+        )}
+        <span style={{
+          marginLeft: "auto", fontSize: 8, padding: "1px 4px",
+          backgroundColor: cfg.border + "20", color: cfg.border,
+          border: `1px solid ${cfg.border}40`, fontFamily: "monospace",
+        }}>
+          {cfg.label}
+        </span>
+      </div>
+      <div style={{
+        fontSize: 11, color: "#b09878", wordBreak: "break-word",
+        maxHeight: 80, overflow: "hidden", fontFamily: "monospace",
+      }}>
+        {msgText.slice(0, maxChars)}{msgText.length > maxChars ? "..." : ""}
+      </div>
+    </div>
+  );
+}
+
+/** Toast notifications for team activity — slides in at top-right of game stage */
+function TeamActivityToast({ messages, agents, assetsReady }: {
+  messages: TeamChatMessage[];
+  agents: Map<string, { name: string; palette?: number }>;
+  assetsReady?: boolean;
+}) {
+  const [visible, setVisible] = useState<TeamChatMessage | null>(null);
+  const [sliding, setSliding] = useState(false);
+  const lastCountRef = useRef(messages.length);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (messages.length > lastCountRef.current) {
+      const newest = messages[messages.length - 1];
+      if (newest && newest.fromAgentId) {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        setVisible(newest);
+        setSliding(true);
+        timerRef.current = setTimeout(() => {
+          setSliding(false);
+          timerRef.current = setTimeout(() => setVisible(null), 400);
+        }, 5000);
+      }
+    }
+    lastCountRef.current = messages.length;
+  }, [messages.length, messages]);
+
+  useEffect(() => {
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <div style={{
+      position: "absolute", top: 0, right: 0, zIndex: 20,
+      width: 300, maxWidth: "40vw",
+      transform: sliding ? "translateX(0)" : "translateX(calc(100% + 16px))",
+      opacity: sliding ? 1 : 0,
+      transition: "transform 0.35s ease, opacity 0.35s ease",
+      pointerEvents: "none",
+    }}>
+      <TeamActivityCard msg={visible} agents={agents} assetsReady={assetsReady} maxChars={120} shadow />
+    </div>
+  );
+}
+
 function TeamActivityLog({ messages, agents, assetsReady, onClear }: {
   messages: TeamChatMessage[];
   agents: Map<string, { name: string; palette?: number }>;
   assetsReady?: boolean;
   onClear?: () => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!collapsed) endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -994,49 +1145,8 @@ function TeamActivityLog({ messages, agents, assetsReady, onClear }: {
         <div style={{ overflowY: "auto", padding: "0 8px", display: "flex", flexDirection: "column", gap: 4 }}>
           {messages.map((msg, i) => {
             if (!msg || !msg.fromAgentId) return null;
-            const cfg = TEAM_MSG_COLORS[msg.messageType] ?? TEAM_MSG_COLORS.status;
-            const fromAgent = agents.get(msg.fromAgentId);
-            const toAgent = msg.toAgentId ? agents.get(msg.toAgentId) : undefined;
-            const msgText = msg.message ?? "";
             return (
-              <div key={msg.id ?? `tc-${i}`} style={{
-                padding: "8px 10px",
-                backgroundColor: cfg.bg, borderLeft: `2px solid ${cfg.border}`,
-                border: `1px solid ${cfg.border}40`,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                  {fromAgent?.palette !== undefined && (
-                    <SpriteAvatar palette={fromAgent.palette} zoom={1} ready={assetsReady} />
-                  )}
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "#eddcb8" }}>
-                    {msg.fromAgentName ?? msg.fromAgentId}
-                  </span>
-                  {msg.toAgentName && (
-                    <>
-                      <span style={{ fontSize: 10, color: "#6a5848" }}>&rarr;</span>
-                      {toAgent?.palette !== undefined && (
-                        <SpriteAvatar palette={toAgent.palette} zoom={1} ready={assetsReady} />
-                      )}
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#eddcb8" }}>
-                        {msg.toAgentName}
-                      </span>
-                    </>
-                  )}
-                  <span style={{
-                    marginLeft: "auto", fontSize: 8, padding: "1px 4px",
-                    backgroundColor: cfg.border + "20", color: cfg.border,
-                    border: `1px solid ${cfg.border}40`, fontFamily: "monospace",
-                  }}>
-                    {cfg.label}
-                  </span>
-                </div>
-                <div style={{
-                  fontSize: 11, color: "#b09878", wordBreak: "break-word",
-                  maxHeight: 80, overflow: "hidden", fontFamily: "monospace",
-                }}>
-                  {msgText.slice(0, 150)}{msgText.length > 150 ? "..." : ""}
-                </div>
-              </div>
+              <TeamActivityCard key={msg.id ?? `tc-${i}`} msg={msg} agents={agents} assetsReady={assetsReady} />
             );
           })}
           <div ref={endRef} />
@@ -1209,7 +1319,7 @@ export default function OfficePage() {
   const { agents, connected, addUserMessage, teamMessages, clearTeamMessages, teamPhases } = useOfficeStore();
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [celebration, setCelebration] = useState<{ previewUrl?: string; previewPath?: string; previewCmd?: string; previewPort?: number; projectDir?: string } | null>(null);
+  const [celebration, setCelebration] = useState<{ previewUrl?: string; previewPath?: string; previewCmd?: string; previewPort?: number; projectDir?: string; entryFile?: string } | null>(null);
   const [showConfetti, setShowConfetti] = useState(false);
   const { confirm, modal: confirmModal } = useConfirm();
   const [showHireModal, setShowHireModal] = useState(false);
@@ -1270,7 +1380,7 @@ export default function OfficePage() {
         // Team leader → only celebrate when isFinalResult is explicitly true
         if (agentState.isTeamLead && !msg.isFinalResult) continue;
         // Solo agent or leader with isFinalResult → celebrate
-        setCelebration({ previewUrl: r.previewUrl, previewPath: r.previewPath, previewCmd: r.previewCmd, previewPort: r.previewPort, projectDir: r.projectDir });
+        setCelebration({ previewUrl: r.previewUrl, previewPath: r.previewPath, previewCmd: r.previewCmd, previewPort: r.previewPort, projectDir: r.projectDir, entryFile: r.entryFile });
         setShowConfetti(true);
         setTimeout(() => setShowConfetti(false), 3000);
       }
@@ -1596,6 +1706,11 @@ export default function OfficePage() {
             onToggleEditMode={toggleEditMode}
             onOpenSettings={() => setShowSettings(true)}
           />
+        )}
+
+        {/* Team activity toast notifications */}
+        {teamMessages.length > 0 && (
+          <TeamActivityToast messages={teamMessages} agents={agents} assetsReady={assetsReady} />
         )}
 
       </div>
@@ -2501,6 +2616,7 @@ export default function OfficePage() {
           previewCmd={celebration.previewCmd}
           previewPort={celebration.previewPort}
           projectDir={celebration.projectDir}
+          entryFile={celebration.entryFile}
           onPreview={(url) => { setPreviewUrl(url); setCelebration(null); setShowConfetti(false); }}
           onDismiss={() => { setCelebration(null); setShowConfetti(false); }}
         />

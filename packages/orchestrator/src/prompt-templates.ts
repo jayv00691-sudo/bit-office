@@ -135,6 +135,7 @@ VERIFICATION (MANDATORY before reporting STATUS: done):
 - If your deliverable is an HTML file → confirm it exists and references valid scripts/styles
 - If your deliverable is a script (Python, Node, etc.) → run a syntax check (python -c "import ast; ast.parse(open('app.py').read())" or node --check app.js)
 - If NONE of the above apply → at minimum list the files and confirm the entry point exists
+- IMPORTANT: Do NOT launch GUI/desktop applications (Pygame, Tkinter, Electron, etc.) to test them — they open windows that cannot be controlled. Use syntax checks and import checks only. The user will launch the app manually when ready.
 - FINAL CHECK: confirm you can fill in at least ENTRY_FILE or PREVIEW_CMD (see deliverable types). If you cannot, your deliverable is incomplete — fix it before reporting.
 - Do NOT report STATUS: done unless verification passes. Fix problems yourself first.
 - STATUS: failed is ONLY for truly unsolvable problems (missing API keys, no network, system-level issues).
@@ -175,10 +176,11 @@ CONVERGENCE RULES (follow strictly):
 
 HARD LIMITS:
 - Do NOT start any long-running dev server or file server. The system handles preview serving automatically.
+- Do NOT launch GUI/desktop applications (Pygame, Tkinter, Electron, etc.) to test them — they open windows that cannot be controlled. Use syntax checks, import checks, and code reading only.
 
 Code Quality (must check):
 - Correctness, security vulnerabilities, crashes, broken logic.
-- Verify the deliverable can actually run: check that entry point exists, dependencies are declared, build output is present.
+- Verify the deliverable can actually run: check that entry point exists, dependencies are declared, build output is present. For GUI/desktop apps, verify via code review and syntax checks — do NOT run them.
 
 Feature Completeness (must check):
 - Compare the deliverable against the key features listed in your task assignment.
@@ -218,7 +220,7 @@ Rules:
 ===== PLAN FORMAT (strict — follow this structure) =====
 
 [PLAN]
-CONCEPT: One sentence — what is this product and who is it for?
+CONCEPT: Short Name — one sentence describing what this product is and who it's for (e.g. "Shadow Dash — a fast-paced rooftop runner for casual gamers")
 
 CREATIVE VISION:
 - Theme & setting (e.g. "pixel cityscape at night", "cozy forest café")

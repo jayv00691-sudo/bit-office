@@ -31,8 +31,8 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
   private sandboxMode: "full" | "safe";
   private worktreeEnabled: boolean;
   private worktreeMerge: boolean;
-  /** Preview captured from the first dev worker that produces one — not from QA/reviewer */
-  private teamPreview: { previewUrl: string; previewPath?: string } | null = null;
+  /** Preview info captured from the first dev worker that produces one — not from QA/reviewer */
+  private teamPreview: { previewUrl?: string; previewPath?: string; entryFile?: string; previewCmd?: string; previewPort?: number } | null = null;
   /** Accumulated changedFiles from all workers in the current team session */
   private teamChangedFiles = new Set<string>();
   /** Guard against emitting isFinalResult more than once per execute cycle. */
@@ -466,17 +466,21 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
         }
       }
 
-      // Capture preview from dev workers (not reviewer, not leader).
+      // Capture preview fields from dev workers (not reviewer, not leader).
+      // These are the ground truth — the worker created the actual files.
       // Always update — later fix iterations may produce a newer/fixed build.
       if (!this.agentManager.isTeamLead(agentId)) {
         const role = session?.role?.toLowerCase() ?? "";
         const isDevWorker = !role.includes("review");
-        if (isDevWorker && event.result?.previewUrl) {
+        if (isDevWorker && event.result && (event.result.previewUrl || event.result.entryFile || event.result.previewCmd)) {
           this.teamPreview = {
             previewUrl: event.result.previewUrl,
             previewPath: event.result.previewPath,
+            entryFile: event.result.entryFile,
+            previewCmd: event.result.previewCmd,
+            previewPort: event.result.previewPort,
           };
-          console.log(`[Orchestrator] Preview captured from ${session?.name}: ${this.teamPreview.previewUrl}`);
+          console.log(`[Orchestrator] Preview captured from ${session?.name}: url=${this.teamPreview.previewUrl}, entry=${this.teamPreview.entryFile}, cmd=${this.teamPreview.previewCmd}`);
         }
       }
 
@@ -518,10 +522,59 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
             event.result.changedFiles = Array.from(merged);
           }
 
-          // Use preview captured earlier from dev workers
-          if (!event.result?.previewUrl && this.teamPreview && event.result) {
-            event.result.previewUrl = this.teamPreview.previewUrl;
-            event.result.previewPath = this.teamPreview.previewPath;
+          // Always inject the correct project directory — leader's self-reported PROJECT_DIR is unreliable
+          if (event.result) {
+            const teamDir = this.delegationRouter.getTeamProjectDir();
+            if (teamDir) {
+              event.result.projectDir = teamDir;
+            }
+          }
+
+          // Use preview fields captured from dev workers — these are ground truth.
+          // Worker created the actual files, so its fields are always more reliable than the leader's.
+          if (this.teamPreview && event.result) {
+            if (this.teamPreview.previewUrl) {
+              event.result.previewUrl = this.teamPreview.previewUrl;
+              event.result.previewPath = this.teamPreview.previewPath;
+            }
+            // Always prefer worker's entry/cmd/port over leader's (leader often hallucinates filenames)
+            if (this.teamPreview.entryFile) event.result.entryFile = this.teamPreview.entryFile;
+            if (this.teamPreview.previewCmd) event.result.previewCmd = this.teamPreview.previewCmd;
+            if (this.teamPreview.previewPort) event.result.previewPort = this.teamPreview.previewPort;
+          }
+
+          // Validate entryFile against disk — agents (both dev and leader) often hallucinate filenames.
+          // changedFiles is ground truth because it comes from actual file operations.
+          if (event.result?.entryFile) {
+            const projectDir = this.delegationRouter.getTeamProjectDir() ?? this.workspace;
+            const absEntry = path.isAbsolute(event.result.entryFile)
+              ? event.result.entryFile
+              : path.join(projectDir, event.result.entryFile);
+            if (!existsSync(absEntry)) {
+              const allFiles = event.result.changedFiles ?? [];
+              const ext = path.extname(event.result.entryFile).toLowerCase();
+              const candidate = allFiles
+                .map(f => path.basename(f))
+                .find(f => path.extname(f).toLowerCase() === ext);
+              if (candidate) {
+                console.log(`[Orchestrator] entryFile "${event.result.entryFile}" not found on disk, using "${candidate}" from changedFiles`);
+                event.result.entryFile = candidate;
+              } else {
+                console.log(`[Orchestrator] entryFile "${event.result.entryFile}" not found on disk, clearing`);
+                event.result.entryFile = undefined;
+              }
+            }
+          }
+
+          // Auto-construct previewCmd for non-HTML entryFile if no previewCmd was provided
+          if (event.result?.entryFile && !event.result.previewCmd && !/\.html?$/i.test(event.result.entryFile)) {
+            const ext = path.extname(event.result.entryFile).toLowerCase();
+            const runners: Record<string, string> = { ".py": "python3", ".js": "node", ".rb": "ruby", ".sh": "bash" };
+            const runner = runners[ext];
+            if (runner) {
+              event.result.previewCmd = `${runner} ${event.result.entryFile}`;
+              console.log(`[Orchestrator] Auto-constructed previewCmd: ${event.result.previewCmd}`);
+            }
           }
 
           // Fallback: no dev worker had a preview — scan all workers' changedFiles for .html
@@ -548,9 +601,8 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
                 console.log(`[Orchestrator] Preview from leader PREVIEW_CMD (port ${event.result.previewPort}): ${url}`);
               }
             } else {
-              // Desktop/CLI app: launch the process (no browser preview)
-              previewServer.launchProcess(event.result.previewCmd, projectDir);
-              console.log(`[Orchestrator] Launched app via PREVIEW_CMD: ${event.result.previewCmd}`);
+              // Desktop/CLI app: don't auto-launch — user clicks Launch button on the frontend
+              console.log(`[Orchestrator] Desktop app ready (user can Launch): ${event.result.previewCmd}`);
             }
           }
 
@@ -569,16 +621,8 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
                 event.result.previewPath = absPath;
                 console.log(`[Orchestrator] Preview from leader ENTRY_FILE: ${url}`);
               }
-            } else {
-              // Non-HTML entry file (e.g. game.py) — try to launch it
-              const ext = path.extname(entryFile).toLowerCase();
-              const runners: Record<string, string> = { ".py": "python3", ".js": "node", ".rb": "ruby", ".sh": "bash" };
-              const runner = runners[ext];
-              if (runner) {
-                previewServer.launchProcess(`${runner} ${entryFile}`, projectDir);
-                console.log(`[Orchestrator] Launched ${ext} app from ENTRY_FILE: ${runner} ${entryFile}`);
-              }
             }
+            // Non-HTML entry file: don't auto-launch — user clicks Launch button
           }
 
           // Fallback: scan accumulated changedFiles for .html
