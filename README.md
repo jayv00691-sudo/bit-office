@@ -1,20 +1,20 @@
 # Bit Office
 
-Run your own AI startup — in a pixel office.
+The first multi-model AI team that actually ships code together.
 
-Hire AI agents, describe what you want, and watch a team of AI CLIs plan, code, review, and deliver a working prototype. You're the CEO; they do the work.
+Assemble a team of AI CLIs — Claude Code, Codex, Gemini, Aider — and watch them plan, code, review, and deliver a working prototype. A Leader designs the vision, a Developer writes every line, a Reviewer catches bugs. You're the CEO; they do the work.
 
 <video src="https://github.com/user-attachments/assets/a13ac1a0-8440-49f1-ab1e-110a35847d0c" controls width="100%"></video>
 
 ## Why Bit Office?
 
-Using one AI CLI is powerful. Running a **team** of them is something else:
+One AI CLI is powerful. A **team** of different AI models working together is a force multiplier:
 
-- **"Build me a game"** → Leader designs the concept, developer writes all the code, reviewer catches bugs, you get a playable prototype
-- **Mix models freely** — Claude Code writes, Codex reviews, Gemini tests. Each agent runs whichever AI CLI you choose
-- **Access anywhere** — Desktop browser, mobile PWA (pair with 6-digit code), Ably for remote, or Telegram bots. Approve risky commands from the couch, check progress on the bus
-- **Immersive CLI experience** — Already running Claude Code or Codex in your terminal? Bit Office auto-detects them and streams the live conversation into your pixel office — watch, approve, and read output all in one place
-- **See them work** — Pixel characters animate in a 2D office while agents think, delegate, and debate. Customize your office with the drag-and-drop editor
+- **Real team collaboration, not just chat** — Leader designs, Developer builds, Reviewer checks. Structured delegation with design → execute → review loops, not a single agent doing everything
+- **Mix the best models for each role** — Claude Code leads, Codex develops, Gemini reviews. Each role runs whichever AI CLI fits best. Swap models per role to find the strongest combination
+- **You stay in control** — Approve plans before execution, preview results before accepting, give feedback at every stage. The team iterates until you're satisfied
+- **Monitor everything from anywhere** — Desktop browser, mobile PWA, Telegram bots. Approve risky commands from the couch, check progress on the bus
+- **See them work** — Pixel characters animate in a 2D office while agents think, delegate, and debate. Already running CLIs in your terminal? Bit Office auto-detects them and streams live output into the office
 
 ## Quick Start
 
