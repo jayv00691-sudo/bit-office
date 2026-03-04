@@ -282,6 +282,18 @@ export class AgentSession {
         return false;
       };
 
+      // Accumulator for multi-line delegations (e.g. @Kai: Fix bugs:\n1. bug one\n2. bug two)
+      let pendingDelegation: { targetName: string; lines: string[] } | null = null;
+
+      const flushDelegation = () => {
+        if (pendingDelegation && this.onDelegation) {
+          const fullPrompt = pendingDelegation.lines.join("\n").replace(/\*\*$/, "").trim();
+          console.log(`[Delegation detected] ${this.name} -> @${pendingDelegation.targetName}: ${fullPrompt.slice(0, 120)}`);
+          this.onDelegation(this.agentId, pendingDelegation.targetName, fullPrompt);
+        }
+        pendingDelegation = null;
+      };
+
       // Handle a line of plain text output (delegation detection + logging)
       const handleTextLine = (text: string) => {
         const lines = text.split("\n").filter((l) => l.trim());
@@ -290,15 +302,21 @@ export class AgentSession {
           const trimmed = line.trim();
           console.log(`[Agent ${this.name}] ${trimmed.slice(0, 200)}`);
           const match = this._isTeamLead ? trimmed.match(DELEGATION_RE) : null;
-          if (match && this.onDelegation) {
+          if (match) {
+            // Flush any previous delegation before starting a new one
+            flushDelegation();
             const [, targetName, delegatedPrompt] = match;
-            console.log(`[Delegation detected] ${this.name} -> @${targetName}: ${delegatedPrompt.slice(0, 60)}`);
-            this.onDelegation(this.agentId, targetName, delegatedPrompt.replace(/\*\*$/, "").trim());
+            pendingDelegation = { targetName, lines: [delegatedPrompt] };
+          } else if (pendingDelegation) {
+            // Continuation line of current delegation
+            pendingDelegation.lines.push(trimmed);
           }
           if (!isSystemNoise(line)) {
             visibleLines.push(trimmed);
           }
         }
+        // Flush at end of text block (covers single-delegation and last-delegation cases)
+        flushDelegation();
         if (visibleLines.length > 0) {
           this.onEvent({
             type: "log:append",
