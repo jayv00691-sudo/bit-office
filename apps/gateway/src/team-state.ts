@@ -2,7 +2,7 @@
  * Persist team state to disk so gateway restarts don't lose agents/team/phase.
  * File: ~/.bit-office/team-state.json
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync } from "fs";
 import path from "path";
 import os from "os";
 import type { GatewayEvent } from "@office/shared";
@@ -10,6 +10,7 @@ import type { GatewayEvent } from "@office/shared";
 const BIT_OFFICE_DIR = path.join(os.homedir(), ".bit-office");
 const STATE_FILE = path.join(BIT_OFFICE_DIR, "team-state.json");
 const PROJECTS_DIR = path.join(BIT_OFFICE_DIR, "projects");
+const EVENTS_FILE = path.join(BIT_OFFICE_DIR, "project-events.jsonl");
 
 export interface PersistedAgent {
   agentId: string;
@@ -27,6 +28,8 @@ export interface PersistedTeam {
   leadAgentId: string;
   phase: "create" | "design" | "execute" | "complete";
   projectDir: string | null;
+  /** Leader's originalTask (approved plan / project context) — survives restart */
+  originalTask?: string | null;
 }
 
 export interface TeamState {
@@ -108,14 +111,52 @@ let projectEvents: GatewayEvent[] = [];
 let projectStartedAt: number = Date.now();
 let projectName: string = "";
 
+/** Metadata header stored as the first line of the JSONL file */
+interface EventsFileHeader {
+  _header: true;
+  startedAt: number;
+  projectName: string;
+}
+
 export function setProjectName(name: string): void {
   projectName = name;
+  // Update header on disk
+  rewriteEventsFile();
 }
 
 export function resetProjectBuffer(): void {
   projectEvents = [];
   projectStartedAt = Date.now();
   projectName = "";
+  // Truncate the on-disk buffer
+  try { writeFileSync(EVENTS_FILE, "", "utf-8"); } catch { /* ignore */ }
+}
+
+/**
+ * Restore project event buffer from disk (call on startup).
+ * Survives gateway restarts so archiveProject has data.
+ */
+export function loadProjectBuffer(): void {
+  try {
+    if (!existsSync(EVENTS_FILE)) return;
+    const raw = readFileSync(EVENTS_FILE, "utf-8").trim();
+    if (!raw) return;
+    const lines = raw.split("\n");
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj._header) {
+          projectStartedAt = obj.startedAt ?? Date.now();
+          projectName = obj.projectName ?? "";
+        } else {
+          projectEvents.push(obj as GatewayEvent);
+        }
+      } catch { /* skip corrupt line */ }
+    }
+    if (projectEvents.length > 0) {
+      console.log(`[TeamState] Restored ${projectEvents.length} buffered project events from disk`);
+    }
+  } catch { /* ignore */ }
 }
 
 const MAX_PROJECT_EVENTS = 5000;
@@ -125,6 +166,23 @@ export function bufferEvent(event: GatewayEvent): void {
   // Ensure every archived event has a timestamp
   const stamped = ("timestamp" in event && event.timestamp) ? event : { ...event, timestamp: Date.now() };
   projectEvents.push(stamped as GatewayEvent);
+  // Append to disk (one JSON line) — survives gateway restart
+  try {
+    const dir = path.dirname(EVENTS_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(EVENTS_FILE, JSON.stringify(stamped) + "\n", "utf-8");
+  } catch { /* best-effort */ }
+}
+
+/** Rewrite the full JSONL file (used when header metadata changes, e.g. projectName) */
+function rewriteEventsFile(): void {
+  try {
+    const dir = path.dirname(EVENTS_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const header: EventsFileHeader = { _header: true, startedAt: projectStartedAt, projectName };
+    const lines = [JSON.stringify(header), ...projectEvents.map(e => JSON.stringify(e))];
+    writeFileSync(EVENTS_FILE, lines.join("\n") + "\n", "utf-8");
+  } catch { /* best-effort */ }
 }
 
 export function archiveProject(agents: PersistedAgent[], team: PersistedTeam | null): string | null {

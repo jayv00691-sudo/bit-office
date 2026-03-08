@@ -28,23 +28,24 @@ Multi-agent team collaboration engine. Manages agent lifecycles, task delegation
 
 ```
 src/
-  orchestrator.ts      670 lines  Core engine: lifecycle, events, finalization trigger
-  agent-session.ts     710 lines  Process management: spawn, stream parse, timeout
-  delegation.ts        440 lines  Task routing: depth/budget limits, result batching
-  prompt-templates.ts  424 lines  14 typed templates (leader/worker/reviewer phases)
+  orchestrator.ts      700 lines  Core engine: lifecycle, events, finalization, memory hooks
+  agent-session.ts     715 lines  Process management: spawn, stream parse, timeout
+  delegation.ts        585 lines  Task routing: depth/budget limits, result batching, direct fix
+  prompt-templates.ts  450 lines  15 typed templates (leader/worker/reviewer/direct-fix phases)
+  memory.ts            210 lines  Persistent learning: review patterns, tech prefs, project history
   phase-machine.ts     169 lines  State machine: CREATE -> DESIGN -> EXECUTE -> COMPLETE
   result-finalizer.ts  155 lines  Team-level merge: changedFiles, preview, entryFile
   preview-resolver.ts  116 lines  7-step cascading preview URL resolution
   preview-server.ts    128 lines  Static serve (npx serve) + command execution
   output-parser.ts     101 lines  Structured field extraction from agent stdout
-  config.ts             56 lines  Centralized constants (delegation, timing, preview)
+  config.ts             58 lines  Centralized constants (delegation, timing, preview)
   types.ts             264 lines  All event types, options, payloads
   retry.ts             111 lines  Auto-retry with leader escalation
   worktree.ts          105 lines  Git worktree create/merge/remove
   agent-manager.ts      80 lines  Session registry + team lead tracking
   resolve-path.ts       36 lines  4-strategy path resolution for agent-reported paths
   ai-backend.ts         29 lines  AIBackend interface
-  index.ts              61 lines  Public exports + factory
+  index.ts              63 lines  Public exports + factory
 ```
 
 ## Team Collaboration Flow
@@ -82,13 +83,27 @@ Leader receives result
   v
 Code Reviewer (full tools)
   |  VERDICT: PASS or FAIL + ISSUES
-  v
-Leader receives verdict
   |
-  +-- PASS --> FINAL SUMMARY (isFinalResult = true)
+  +-- PASS --> Leader --> FINAL SUMMARY (isFinalResult = true)
   |
-  +-- FAIL --> @Dev: Fix these issues... (max 3 review cycles)
+  +-- FAIL (1st time) --> Direct Fix: Dev fixes issues, Reviewer re-reviews
+  |                       (skips Leader — saves time and tokens)
+  |
+  +-- FAIL (2nd time) --> Escalate to Leader for strategic decision
 ```
+
+### Direct Fix Shortcut (Reviewer → Dev)
+
+When a reviewer returns `VERDICT: FAIL`, the system uses a **tiered shortcut** to avoid unnecessary Leader round-trips:
+
+1. **First FAIL** — routes directly to the developer with the reviewer's full feedback (`fullOutput`). Developer fixes issues and the reviewer automatically re-reviews. Leader is not involved.
+2. **Second FAIL** — escalates to the Leader, who can decide to try a different approach, reassign, or accept as-is.
+
+This saves 2 Leader AI calls per successful fix cycle (one for forwarding FAIL, one for forwarding the fix result). The `maxDirectFixes` config controls how many direct fix attempts are allowed before escalation (default: 1).
+
+**VERDICT detection**: The `DelegationRouter` matches `VERDICT: FAIL` from the reviewer's `fullOutput` (not the truncated summary), ensuring reliable detection regardless of output format.
+
+All existing safety limits still apply: `maxReviewRounds` (3), `budgetRounds` (7), and `hardCeilingRounds` (10) prevent infinite loops.
 
 ### Delegation Controls
 
@@ -99,6 +114,54 @@ Leader receives verdict
 | `budgetRounds` | 7 | Leader invocations before forced finalize |
 | `hardCeilingRounds` | 10 | Absolute max rounds (synthetic task:done) |
 | `maxReviewRounds` | 3 | Code review iterations before accepting |
+| `maxDirectFixes` | 1 | Direct fix attempts (reviewer→dev) before escalating to leader |
+
+## Agent Memory
+
+Persistent cross-project learning system. Agents improve over time by remembering patterns from previous projects.
+
+### What Gets Remembered
+
+| Memory Type | Recorded When | Injected Into |
+|-------------|---------------|---------------|
+| **Review Patterns** | Reviewer outputs `VERDICT: FAIL` with numbered issues | Dev worker prompts (when same issue flagged ≥2 times) |
+| **Tech Preferences** | Project completes with a `TECH:` line in the approved plan | Dev worker prompts (last 3 preferences shown) |
+| **Project History** | `isFinalResult` fires on team completion | Stored for reference (not injected into prompts) |
+
+### How It Works
+
+- Storage: `~/.bit-office/memory/memory.json` (human-readable, persists across restarts)
+- Memory is **global**, not per-agent — all dev workers in any team share the same learned context
+- Only recurring patterns are injected (count ≥ 2), so one-off issues don't pollute prompts
+- Review patterns are capped at top 20, tech preferences at last 10, project history at last 50
+
+### Example Memory Injection
+
+After two projects where the reviewer flagged "missing build step" and "no error handling in fetch calls", the next dev worker's prompt will include:
+
+```
+===== LEARNED FROM PREVIOUS PROJECTS =====
+COMMON REVIEW ISSUES (avoid these):
+- missing build step (flagged 2x)
+- no error handling in fetch calls (flagged 3x)
+
+USER'S PREFERRED TECH: Vanilla JS + Canvas, React + Tailwind
+```
+
+### API
+
+```typescript
+import { getMemoryStore, clearMemory } from "@bit-office/orchestrator";
+
+// Inspect current memory
+const store = getMemoryStore();
+console.log(store.reviewPatterns);  // [{ pattern: "...", count: 3, lastSeen: ... }]
+console.log(store.techPreferences); // ["Vanilla JS + Canvas", "React + Tailwind"]
+console.log(store.projectHistory);  // [{ summary: "...", tech: "...", completedAt: ... }]
+
+// Reset all memory
+clearMemory();
+```
 
 ## Preview Resolution
 
@@ -269,6 +332,7 @@ CONFIG.delegation.maxTotal          // 20
 CONFIG.delegation.budgetRounds      // 7
 CONFIG.delegation.hardCeilingRounds // 10
 CONFIG.delegation.maxReviewRounds   // 3
+CONFIG.delegation.maxDirectFixes    // 1 (direct reviewer→dev fix attempts before leader)
 
 CONFIG.timing.leaderTimeoutMs       // 3 min
 CONFIG.timing.workerTimeoutMs       // 8 min
@@ -283,7 +347,7 @@ CONFIG.preview.runners              // { ".py": "python3", ".js": "node", ... }
 
 ## Prompt Templates
 
-14 templates with compile-time typed names (`TemplateName` union). Templates are embedded as defaults and optionally overridden from disk (`promptsDir`).
+15 templates with compile-time typed names (`TemplateName` union). Templates are embedded as defaults and optionally overridden from disk (`promptsDir`).
 
 | Template | Phase | Used When |
 |----------|-------|-----------|
@@ -299,7 +363,8 @@ CONFIG.preview.runners              // { ".py": "python3", ".js": "node", ... }
 | `worker-initial` | EXECUTE | Developer task assignment |
 | `worker-reviewer-initial` | EXECUTE | Code reviewer task |
 | `worker-continue` | EXECUTE | Follow-up to worker |
+| `worker-direct-fix` | EXECUTE | Direct fix after reviewer FAIL (skips leader) |
 | `delegation-prefix` | EXECUTE | Wraps delegated task prompts |
 | `delegation-hint` | EXECUTE | Delegation syntax helper |
 
-Templates use `{{variable}}` substitution. Override any template by placing a `<template-name>.md` file in `promptsDir`.
+Templates use `{{variable}}` substitution. Key variables include `{{memory}}` (injected from Agent Memory for dev workers) and `{{soloHint}}` (solo mode instructions). Override any template by placing a `<template-name>.md` file in `promptsDir`.

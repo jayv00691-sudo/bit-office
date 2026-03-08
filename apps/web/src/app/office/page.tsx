@@ -172,6 +172,7 @@ function PreviewOverlay({ url, onClose }: { url: string; onClose: () => void }) 
         <iframe
           src={url}
           style={{ flex: 1, border: "none", width: "100%" }}
+          onLoad={(e) => (e.target as HTMLIFrameElement).focus()}
         />
       )}
     </div>

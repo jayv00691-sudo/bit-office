@@ -9,6 +9,7 @@ import { RetryTracker } from "./retry.js";
 import { PhaseMachine } from "./phase-machine.js";
 import { finalizeTeamResult } from "./result-finalizer.js";
 import { createWorktree, mergeWorktree, removeWorktree } from "./worktree.js";
+import { recordReviewFeedback, recordProjectCompletion, recordTechPreference, getMemoryContext } from "./memory.js";
 import type { AIBackend } from "./ai-backend.js";
 import type { TeamPreview } from "./result-finalizer.js";
 import type {
@@ -89,6 +90,11 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
     const backend = this.backends.get(opts.backend ?? this.defaultBackendId)
       ?? this.backends.get(this.defaultBackendId)!;
 
+    // Inject memory context for dev workers (not leader, not reviewer)
+    const roleLower = opts.role.toLowerCase();
+    const isDevWorker = !roleLower.includes("review") && !roleLower.includes("lead");
+    const memoryContext = isDevWorker ? getMemoryContext() : "";
+
     const session = new AgentSession({
       agentId: opts.agentId,
       name: opts.name,
@@ -100,6 +106,7 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
       sandboxMode: this.sandboxMode,
       isTeamLead: this.agentManager.isTeamLead(opts.agentId),
       teamId: opts.teamId,
+      memoryContext,
       onEvent: (e) => this.handleSessionEvent(e, opts.agentId),
       renderPrompt: (name, vars) => this.promptEngine.render(name, vars),
     });
@@ -352,10 +359,22 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
     return this.delegationRouter.getTeamProjectDir();
   }
 
+  /** Get the original task context for the leader (the approved plan). */
+  getOriginalTask(agentId: string): string | null {
+    const session = this.agentManager.get(agentId);
+    return session?.originalTask ?? null;
+  }
+
   /** Set the original task context for the leader (e.g. the approved plan). */
   setOriginalTask(agentId: string, task: string): void {
     const session = this.agentManager.get(agentId);
     if (session) session.originalTask = task;
+  }
+
+  /** Mark leader as having already executed (for restart recovery — uses leader-continue instead of leader-initial). */
+  setHasExecuted(agentId: string, value: boolean): void {
+    const session = this.agentManager.get(agentId);
+    if (session) session.hasExecuted = value;
   }
 
   /** Clear team members' conversation history for a fresh project cycle. */
@@ -515,6 +534,15 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
       this.retryTracker.clear(taskId);
     }
 
+    // ── Memory: record reviewer feedback for learning ──
+    if (event.type === "task:done") {
+      const session = this.agentManager.get(agentId);
+      const role = session?.role?.toLowerCase() ?? "";
+      if (role.includes("review") && event.result?.fullOutput) {
+        recordReviewFeedback(event.result.fullOutput);
+      }
+    }
+
     // Detect phase transitions on task completion
     if (event.type === "task:done") {
       // create → design: leader output contains [PLAN]
@@ -638,6 +666,17 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
           }
 
           const summary = event.result?.summary?.slice(0, 200) ?? "All tasks completed.";
+
+          // ── Memory: record project completion ──
+          const leaderSession = this.agentManager.get(agentId);
+          const planText = leaderSession?.originalTask ?? "";
+          const techMatch = planText.match(/TECH:\s*(.+)/i);
+          const tech = techMatch?.[1]?.trim() ?? "unknown";
+          recordProjectCompletion(summary, tech, true);
+          if (tech !== "unknown") {
+            recordTechPreference(tech);
+          }
+
           this.emitEvent({
             type: "team:chat",
             fromAgentId: agentId,

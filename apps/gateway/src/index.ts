@@ -16,7 +16,7 @@ import path from "path";
 import os from "os";
 import { ProcessScanner } from "./process-scanner.js";
 import { ExternalOutputReader } from "./external-output-reader.js";
-import { loadTeamState, saveTeamState, clearTeamState, type TeamState, type PersistedAgent, bufferEvent, archiveProject, resetProjectBuffer, setProjectName, listProjects, loadProject } from "./team-state.js";
+import { loadTeamState, saveTeamState, clearTeamState, type TeamState, type PersistedAgent, bufferEvent, archiveProject, resetProjectBuffer, setProjectName, listProjects, loadProject, loadProjectBuffer } from "./team-state.js";
 
 // Register all channels — each one self-activates if configured
 registerChannel(wsChannel);
@@ -49,11 +49,13 @@ function persistTeamState() {
   const phases = orc.getAllTeamPhases();
   if (phases.length > 0) {
     const tp = phases[0]; // only one team at a time
+    // Persist originalTask so leader retains plan context across restarts
     team = {
       teamId: tp.teamId,
       leadAgentId: tp.leadAgentId,
       phase: tp.phase,
       projectDir: orc.getTeamProjectDir(),
+      originalTask: orc.getOriginalTask(tp.leadAgentId) ?? undefined,
     };
   }
 
@@ -569,10 +571,11 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
           agentId: agent.agentId,
           status: agent.status,
         });
-        // Restore team phase in orchestrator if lost (e.g. after gateway restart)
+        // Restore team phase in orchestrator if lost (e.g. after gateway restart).
+        // Use "complete" so user can resume — "create" blocks delegation.
         if (agent.isTeamLead && agent.teamId && !orc.getTeamPhase(agent.agentId)) {
-          orc.setTeamPhase(agent.teamId, "create", agent.agentId);
-          console.log(`[Gateway] Restored team phase for ${agent.teamId} (leader=${agent.agentId})`);
+          orc.setTeamPhase(agent.teamId, "complete", agent.agentId);
+          console.log(`[Gateway] Restored team phase for ${agent.teamId} as "complete" (leader=${agent.agentId})`);
         }
       }
       // Broadcast team phase state from orchestrator
@@ -722,6 +725,9 @@ async function main() {
   agentDefs = loadAgentDefs();
   console.log(`[Gateway] Loaded ${agentDefs.length} agent definitions (${agentDefs.filter(a => !a.isBuiltin).length} custom)`);
 
+  // Restore project event buffer from disk (survives gateway restarts)
+  loadProjectBuffer();
+
   // Restore team state from disk (agents, team structure, phase)
   const savedState = loadTeamState();
   if (savedState.agents.length > 0) {
@@ -749,15 +755,38 @@ async function main() {
     if (savedState.team) {
       const t = savedState.team;
       if (t.phase === "execute") {
-        // Execute phase: delegation state (pending tasks, counters) can't be restored.
-        // Move to "create" so leader is ready for the next user instruction.
-        // Session history is preserved so leader retains project context.
-        console.log(`[Gateway] Team was in "execute" phase — moving to "create" (delegation state lost on restart)`);
-        orc.setTeamPhase(t.teamId, "create", t.leadAgentId);
+        // Execute phase: delegation state (pending tasks, counters) can't be restored,
+        // but leader retains project context via session history.
+        // Restore as "complete" so user can say "continue" → auto-transition to execute
+        // (PhaseMachine.handleUserMessage handles complete → execute).
+        // Previously this was "create" which blocked all delegation attempts.
+        console.log(`[Gateway] Team was in "execute" phase — restoring as "complete" (user can resume with feedback)`);
+        orc.setTeamPhase(t.teamId, "complete", t.leadAgentId);
       } else {
         orc.setTeamPhase(t.teamId, t.phase, t.leadAgentId);
       }
-      if (t.projectDir) orc.setTeamProjectDir(t.projectDir);
+
+      // Fix #1/#3: Restore originalTask (approved plan) so leader retains project context
+      if (t.originalTask) {
+        orc.setOriginalTask(t.leadAgentId, t.originalTask);
+        console.log(`[Gateway] Restored originalTask for leader ${t.leadAgentId} (${t.originalTask.length} chars)`);
+      }
+
+      // Fix #2: Mark leader as having executed so it uses leader-continue (not leader-initial)
+      if (t.phase === "execute" || t.phase === "complete") {
+        orc.setHasExecuted(t.leadAgentId, true);
+        console.log(`[Gateway] Marked leader ${t.leadAgentId} as hasExecuted (was in ${t.phase} phase)`);
+      }
+
+      // Fix #4: Validate projectDir exists before restoring
+      if (t.projectDir) {
+        if (existsSync(t.projectDir)) {
+          orc.setTeamProjectDir(t.projectDir);
+        } else {
+          console.warn(`[Gateway] Project dir does not exist: ${t.projectDir} — team will need a new project dir`);
+        }
+      }
+
       const restoredPhase = orc.getTeamPhase(t.leadAgentId);
       console.log(`[Gateway] Restored team ${t.teamId}: phase=${t.phase}→${restoredPhase}, lead=${t.leadAgentId}, projectDir=${t.projectDir}`);
     }

@@ -22,6 +22,12 @@ interface TaskMeta {
   isResultTask?: boolean;
   /** Snapshot of totalDelegations when this result task started */
   delegationsAtStart?: number;
+  /** True if this is a direct fix task (reviewer → dev shortcut) — needs re-review on completion */
+  isDirectFix?: boolean;
+  /** The reviewer agentId that triggered the direct fix (for auto re-review) */
+  reviewerAgentId?: string;
+  /** Original review context (features to check) — carried through for re-review resilience */
+  reviewContext?: string;
 }
 
 export class DelegationRouter {
@@ -41,6 +47,10 @@ export class DelegationRouter {
   private pendingResults = new Map<string, { results: PendingResult[]; timer: ReturnType<typeof setTimeout> }>();
   /** Team-wide project directory — all delegations use this as repoPath when set */
   private teamProjectDir: string | null = null;
+  /** Direct fix attempts per dev agent (reviewer → dev shortcut without leader) */
+  private devFixAttempts = new Map<string, number>();
+  /** Tracks which dev agent was last assigned to work (for reviewer → dev routing) */
+  private lastDevAgentId: string | null = null;
   private agentManager: AgentManager;
   private promptEngine: PromptEngine;
   private emitEvent: (event: OrchestratorEvent) => void;
@@ -158,6 +168,8 @@ export class DelegationRouter {
     this.reviewCount = 0;
     this.stopped = false;
     this.teamProjectDir = null;
+    this.devFixAttempts.clear();
+    this.lastDevAgentId = null;
     for (const pending of this.pendingResults.values()) {
       clearTimeout(pending.timer);
     }
@@ -240,6 +252,12 @@ export class DelegationRouter {
 
       const fullPrompt = this.promptEngine.render("delegation-prefix", { fromName, fromRole, prompt: cleanPrompt });
 
+      // Track last dev worker for reviewer → dev shortcut routing
+      const targetRole = target.role.toLowerCase();
+      if (!targetRole.includes("review") && !targetRole.includes("lead")) {
+        this.lastDevAgentId = target.agentId;
+      }
+
       console.log(`[Delegation] ${fromAgentId} -> ${target.agentId} (${targetName}) depth=${newDepth} total=${this.totalDelegations} repoPath=${repoPath ?? "default"}: ${cleanPrompt.slice(0, 80)}`);
       this.emitEvent({
         type: "task:delegated",
@@ -263,7 +281,7 @@ export class DelegationRouter {
   }
 
   private wireResultForwarding(session: AgentSession): void {
-    session.onTaskComplete = (agentId, taskId, summary, success) => {
+    session.onTaskComplete = (agentId, taskId, summary, success, fullOutput) => {
       if (this.stopped) return;
 
       const meta = this.tasks.get(taskId);
@@ -302,9 +320,147 @@ export class DelegationRouter {
         timestamp: Date.now(),
       });
 
+      // ── Direct fix complete: dev finished fix → auto re-review ──
+      if (meta.isDirectFix && meta.reviewerAgentId && success) {
+        const reviewerSession = this.agentManager.get(meta.reviewerAgentId);
+        if (reviewerSession) {
+          const reReviewTaskId = nanoid();
+          this.tasks.set(reReviewTaskId, { origin: originAgentId, depth: 1 });
+          this.assignedTask.set(meta.reviewerAgentId, reReviewTaskId);
+          this.totalDelegations++;
+
+          // Include the original review context (reviewer's FAIL output) so the re-review
+          // has full context even if --resume fails and session history is lost.
+          const originalContext = meta.reviewContext
+            ? `\n\nYour previous review (for reference):\n${meta.reviewContext}`
+            : "";
+          const reReviewPrompt = this.promptEngine.render("worker-continue", {
+            prompt: `[Re-review after fix] ${fromName} has fixed the issues you reported. Please review the code again.\n\nDev's fix report:\n${summary.slice(0, 600)}${originalContext}\n\n===== YOUR TASK =====\n1. Check if ALL previously reported ISSUES are resolved\n2. Verify the deliverable runs without crashes\n3. Verify core features work (compare against the original task requirements)\n\nVERDICT: PASS | FAIL\n- PASS = code runs without crashes AND core features are implemented (even if rough)\n- FAIL = crashes/bugs that prevent usage OR core features are missing/broken\nISSUES: (numbered list if FAIL — only real bugs or missing core features)\nSUMMARY: (one sentence overall assessment)`,
+          });
+          const repoPath = this.teamProjectDir ?? undefined;
+
+          console.log(`[DirectFix] Dev ${fromName} fix complete → auto re-review by ${reviewerSession.name}`);
+          this.emitEvent({
+            type: "task:delegated",
+            fromAgentId: agentId,
+            toAgentId: meta.reviewerAgentId,
+            taskId: reReviewTaskId,
+            prompt: `Re-review after fix by ${fromName}`,
+          });
+          this.emitEvent({
+            type: "team:chat",
+            fromAgentId: agentId,
+            toAgentId: meta.reviewerAgentId,
+            message: `Fix completed, requesting re-review`,
+            messageType: "result",
+            taskId: reReviewTaskId,
+            timestamp: Date.now(),
+          });
+
+          reviewerSession.runTask(reReviewTaskId, reReviewPrompt, repoPath);
+          return; // Handled — skip normal leader forwarding
+        }
+      }
+
+      // ── Direct fix shortcut: reviewer FAIL → dev (skip leader) ──
+      if (this.tryDirectFix(agentId, fromSession, fullOutput ?? summary, originAgentId)) {
+        return; // Handled — skip normal leader forwarding
+      }
+
       // Batch results: accumulate and flush to leader after a short window
       this.enqueueResult(originAgentId, { fromName, statusWord, summary: summary.slice(0, 400) });
     };
+  }
+
+  /**
+   * Attempt a direct reviewer → dev fix shortcut.
+   * Returns true if the shortcut was taken (caller should skip normal forwarding).
+   *
+   * Strategy:
+   * - First FAIL: route directly to dev with reviewer feedback (skip leader)
+   * - Second FAIL for same dev: escalate to leader (maybe needs a different approach)
+   */
+  private tryDirectFix(
+    reviewerAgentId: string,
+    reviewerSession: AgentSession | undefined,
+    output: string,
+    originAgentId: string,
+  ): boolean {
+    // Only applies to reviewers
+    const role = reviewerSession?.role?.toLowerCase() ?? "";
+    if (!role.includes("review")) return false;
+
+    // Parse verdict from reviewer output (fullOutput contains VERDICT line)
+    const verdictMatch = output.match(/VERDICT[:\s]*(\w+)/i);
+    if (!verdictMatch || verdictMatch[1].toUpperCase() !== "FAIL") return false;
+
+    // Find the dev to send the fix to
+    const devAgentId = this.lastDevAgentId;
+    if (!devAgentId) return false;
+
+    const devSession = this.agentManager.get(devAgentId);
+    if (!devSession) return false;
+
+    // Check fix attempt count for this dev
+    const attempts = this.devFixAttempts.get(devAgentId) ?? 0;
+    if (attempts >= CONFIG.delegation.maxDirectFixes) {
+      console.log(`[DirectFix] Dev ${devSession.name} already had ${attempts} direct fix(es), escalating to leader`);
+      return false; // Fall through to normal leader forwarding
+    }
+
+    // Check global review budget BEFORE committing (don't increment yet — flushResults does its own counting if we bail)
+    if (this.reviewCount >= CONFIG.delegation.maxReviewRounds) {
+      console.log(`[DirectFix] Review limit reached (${this.reviewCount}/${CONFIG.delegation.maxReviewRounds}), escalating to leader`);
+      return false;
+    }
+
+    // Commit: we are taking the shortcut
+    this.reviewCount++;
+    this.devFixAttempts.set(devAgentId, attempts + 1);
+    this.totalDelegations++;
+
+    // Build a fix prompt from reviewer feedback.
+    // Carry the reviewer's full FAIL output as reviewContext — it contains the issues list
+    // AND implicitly the features that were checked. If --resume fails on re-review,
+    // this context ensures the reviewer still knows what to verify.
+    const fixTaskId = nanoid();
+    this.tasks.set(fixTaskId, {
+      origin: originAgentId,
+      depth: 1,
+      isDirectFix: true,
+      reviewerAgentId: reviewerAgentId,
+      reviewContext: output.slice(0, 1000),
+    });
+    this.assignedTask.set(devAgentId, fixTaskId);
+
+    const reviewerName = reviewerSession?.name ?? "Code Reviewer";
+    const fixPrompt = this.promptEngine.render("worker-direct-fix", {
+      reviewerName,
+      reviewFeedback: output.slice(0, 800),
+    });
+
+    const repoPath = this.teamProjectDir ?? undefined;
+
+    console.log(`[DirectFix] ${reviewerName} FAIL → ${devSession.name} (attempt ${attempts + 1}/${CONFIG.delegation.maxDirectFixes}, skipping leader)`);
+    this.emitEvent({
+      type: "task:delegated",
+      fromAgentId: reviewerAgentId,
+      toAgentId: devAgentId,
+      taskId: fixTaskId,
+      prompt: `Fix issues from ${reviewerName}'s review`,
+    });
+    this.emitEvent({
+      type: "team:chat",
+      fromAgentId: reviewerAgentId,
+      toAgentId: devAgentId,
+      message: `Direct fix: ${output.slice(0, 300)}`,
+      messageType: "delegation",
+      taskId: fixTaskId,
+      timestamp: Date.now(),
+    });
+
+    devSession.runTask(fixTaskId, fixPrompt, repoPath);
+    return true;
   }
 
   /**

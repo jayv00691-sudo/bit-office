@@ -15,6 +15,8 @@ export const CONFIG = {
     hardCeilingRounds: 10,
     /** Maximum code review iterations before accepting as-is */
     maxReviewRounds: 3,
+    /** Maximum direct fix attempts (reviewer → dev) before escalating to leader */
+    maxDirectFixes: 1,
   },
 
   timing: {

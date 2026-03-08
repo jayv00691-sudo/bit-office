@@ -51,7 +51,7 @@ interface PendingApproval {
 export type DelegationHandler = (fromAgentId: string, targetName: string, prompt: string) => void;
 
 /** Callback when a task completes: (agentId, taskId, summary, success) => void */
-export type TaskCompleteHandler = (agentId: string, taskId: string, summary: string, success: boolean) => void;
+export type TaskCompleteHandler = (agentId: string, taskId: string, summary: string, success: boolean, fullOutput?: string) => void;
 
 interface QueuedTask {
   taskId: string;
@@ -75,6 +75,8 @@ export interface AgentSessionOpts {
   /** Whether this agent is the team lead (uses leader template, no tools) */
   isTeamLead?: boolean;
   teamId?: string;
+  /** Memory context to inject into prompts (from previous projects) */
+  memoryContext?: string;
 }
 
 export class AgentSession {
@@ -105,6 +107,7 @@ export class AgentSession {
   private _renderPrompt: (templateName: TemplateName, vars: Record<string, string | undefined>) => string;
   private timedOut = false;
   private _isTeamLead: boolean;
+  private _memoryContext: string;
   /** Whether this leader has already been through execute phase at least once */
   private _hasExecuted = false;
   private _lastResult: string | null = null;
@@ -115,6 +118,8 @@ export class AgentSession {
   /** Whether the last failure was a timeout (not retryable) */
   get wasTimeout(): boolean { return this.timedOut; }
   get isTeamLead(): boolean { return this._isTeamLead; }
+  /** Mark that this leader has already been through execute phase (for restart recovery). */
+  set hasExecuted(v: boolean) { this._hasExecuted = v; }
   /** Short summary of last completed/failed task (for roster context) */
   get lastResult(): string | null { return this._lastResult; }
   private _lastResultText: string | null = null;
@@ -150,6 +155,7 @@ export class AgentSession {
     this.sandboxMode = opts.sandboxMode ?? "full";
     this._isTeamLead = opts.isTeamLead ?? false;
     this.teamId = opts.teamId;
+    this._memoryContext = opts.memoryContext ?? "";
     this.onEvent = opts.onEvent;
     this._renderPrompt = opts.renderPrompt;
   }
@@ -216,6 +222,7 @@ export class AgentSession {
         teamRoster: teamContext ?? "",
         originalTask,
         prompt,
+        memory: this._memoryContext,
         soloHint: this.teamId ? "" : `- You are a SOLO developer. Do NOT delegate, assign tasks, or mention other team members. Do ALL the work yourself.
 - PROJECT DIRECTORY: When creating files, first create a dedicated project directory (short kebab-case name, e.g. "snake-game"). Do ALL work inside it. Report it as PROJECT_DIR: <directory-name> in your output. If the user is just chatting (no code needed), skip this.`,
       };
@@ -499,7 +506,7 @@ export class AgentSession {
               taskId: completedTaskId,
               result: { summary, fullOutput, changedFiles, diffStat: "", testResult: "unknown", previewUrl, previewPath, entryFile, projectDir, previewCmd, previewPort, tokenUsage },
             });
-            this.onTaskComplete?.(this.agentId, completedTaskId, summary, true);
+            this.onTaskComplete?.(this.agentId, completedTaskId, summary, true, fullOutput);
             this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, CONFIG.timing.idleDoneDelayMs);
           } else {
             const errorMsg = this.stdoutBuffer.slice(0, 300) || this.stderrBuffer.slice(-300) || `Process exited with code ${code}`;

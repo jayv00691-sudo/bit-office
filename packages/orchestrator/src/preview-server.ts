@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, execSync, type ChildProcess } from "child_process";
 import { existsSync } from "fs";
 import path from "path";
 
@@ -102,15 +102,13 @@ class PreviewServer {
     }
   }
 
-  /** Kill the current process */
+  /** Kill the current process and any orphan process on the static port */
   stop() {
     if (this.process) {
       try {
         if (this.isDetached && this.process.pid) {
-          // Detached: kill the process group (pgid = pid) to clean up child processes
           process.kill(-this.process.pid, "SIGTERM");
         } else {
-          // Non-detached (GUI apps): kill process directly — shell forwards signal to children
           this.process.kill("SIGTERM");
         }
       } catch {
@@ -121,6 +119,24 @@ class PreviewServer {
       this.isDetached = false;
       console.log(`[PreviewServer] Stopped`);
     }
+    // Kill any orphan process still holding the static port (e.g. from a previous gateway run)
+    this.killPortHolder(STATIC_PORT);
+  }
+
+  /** Kill whatever process is listening on the given port (best-effort). */
+  private killPortHolder(port: number): void {
+    try {
+      const out = execSync(`lsof -ti :${port}`, { encoding: "utf-8", timeout: 3000 }).trim();
+      if (out) {
+        for (const pid of out.split("\n")) {
+          const n = parseInt(pid, 10);
+          if (n > 0) {
+            try { process.kill(n, "SIGKILL"); } catch { /* already dead */ }
+          }
+        }
+        console.log(`[PreviewServer] Killed orphan process(es) on port ${port}: ${out.replace(/\n/g, ", ")}`);
+      }
+    } catch { /* no process on port — good */ }
   }
 }
 
