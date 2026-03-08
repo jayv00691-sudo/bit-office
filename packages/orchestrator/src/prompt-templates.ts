@@ -5,7 +5,24 @@ import path from "path";
 // Default templates (embedded fallbacks)
 // ---------------------------------------------------------------------------
 
-const PROMPT_DEFAULTS: Record<string, string> = {
+/** All known template names — compile-time safety for render() calls */
+export type TemplateName =
+  | "leader-initial"
+  | "leader-continue"
+  | "leader-result"
+  | "worker-initial"
+  | "worker-reviewer-initial"
+  | "worker-continue"
+  | "delegation-prefix"
+  | "delegation-hint"
+  | "leader-create"
+  | "leader-create-continue"
+  | "leader-design"
+  | "leader-design-continue"
+  | "leader-complete"
+  | "leader-complete-continue";
+
+const PROMPT_DEFAULTS: Record<TemplateName, string> = {
   "leader-initial": `You are {{name}}, the Team Lead. {{personality}}
 You CANNOT write code, run commands, or use any tools. You can ONLY delegate.
 
@@ -396,7 +413,7 @@ export class PromptEngine {
    * Render a named template with variable substitution.
    * {{variable}} placeholders are replaced with the provided values.
    */
-  render(templateName: string, vars: Record<string, string | undefined>): string {
+  render(templateName: TemplateName, vars: Record<string, string | undefined>): string {
     const template = this.templates[templateName] ?? PROMPT_DEFAULTS[templateName];
     if (!template) {
       console.warn(`[Prompts] Unknown template: ${templateName}`);

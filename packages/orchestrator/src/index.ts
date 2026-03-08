@@ -3,15 +3,26 @@ export { AgentSession } from "./agent-session.js";
 export { previewServer } from "./preview-server.js";
 export { AgentManager } from "./agent-manager.js";
 export { DelegationRouter } from "./delegation.js";
+export { PhaseMachine } from "./phase-machine.js";
+export { finalizeTeamResult } from "./result-finalizer.js";
+export type { TeamPreview, FinalizeContext } from "./result-finalizer.js";
 export { PromptEngine } from "./prompt-templates.js";
+export { resolvePreview } from "./preview-resolver.js";
+export type { TemplateName } from "./prompt-templates.js";
+export type { PreviewInput, PreviewResult } from "./preview-resolver.js";
 export { RetryTracker } from "./retry.js";
+export { parseAgentOutput } from "./output-parser.js";
+export type { ParsedResult } from "./output-parser.js";
+export { CONFIG } from "./config.js";
 export { createWorktree, mergeWorktree, removeWorktree } from "./worktree.js";
 
 export type { AIBackend, BuildArgsOpts } from "./ai-backend.js";
+export type { TeamPhaseInfo } from "./phase-machine.js";
 export type {
   AgentStatus,
   RiskLevel,
   Decision,
+  TeamPhase,
   TaskResultPayload,
   OrchestratorEvent,
   OrchestratorEventMap,
@@ -36,6 +47,7 @@ export type {
   AgentCreatedEvent,
   AgentFiredEvent,
   TaskResultReturnedEvent,
+  TeamPhaseChangedEvent,
 } from "./types.js";
 
 import { Orchestrator } from "./orchestrator.js";

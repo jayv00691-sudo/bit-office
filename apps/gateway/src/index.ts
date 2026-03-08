@@ -5,7 +5,7 @@ import { telegramChannel } from "./telegram-channel.js";
 import { config, hasSetupRun, reloadConfig, saveConfig } from "./config.js";
 import { runSetup } from "./setup.js";
 import { detectBackends, getBackend, getAllBackends } from "./backends.js";
-import { createOrchestrator, previewServer, type Orchestrator, type OrchestratorEvent } from "@bit-office/orchestrator";
+import { createOrchestrator, previewServer, type Orchestrator, type OrchestratorEvent, type TeamPhaseChangedEvent } from "@bit-office/orchestrator";
 import type { Command, GatewayEvent, UserRole } from "@office/shared";
 import type { CommandMeta } from "./transport.js";
 import { DEFAULT_AGENT_DEFS, type AgentDefinition } from "@office/shared";
@@ -30,19 +30,7 @@ let outputReader: ExternalOutputReader | null = null;
 /** Track external agents so PING can broadcast them */
 const externalAgents = new Map<string, { agentId: string; name: string; backendId: string; pid: number; cwd: string | null; startedAt: number; status: "working" | "idle" }>();
 
-/** Track team collaboration phases */
-const teamPhases = new Map<string, { phase: "create" | "design" | "execute" | "complete"; leadAgentId: string }>();
-
-function publishTeamPhase(teamId: string, phase: "create" | "design" | "execute" | "complete", leadAgentId: string) {
-  teamPhases.set(teamId, { phase, leadAgentId });
-  const evt = { type: "TEAM_PHASE" as const, teamId, phase, leadAgentId };
-  bufferEvent(evt);
-  publishEvent(evt);
-  // Persist after phase transitions (orc may not be ready during early init)
-  if (orc) persistTeamState();
-}
-
-/** Snapshot current team state to disk */
+/** Snapshot current team state to disk (reads phase from orchestrator's PhaseMachine) */
 function persistTeamState() {
   const agents: PersistedAgent[] = orc.getAllAgents()
     .filter(a => a.teamId || orc.isTeamLead(a.agentId))
@@ -58,14 +46,15 @@ function persistTeamState() {
     }));
 
   let team: TeamState["team"] = null;
-  for (const [teamId, tp] of teamPhases) {
+  const phases = orc.getAllTeamPhases();
+  if (phases.length > 0) {
+    const tp = phases[0]; // only one team at a time
     team = {
-      teamId,
+      teamId: tp.teamId,
       leadAgentId: tp.leadAgentId,
       phase: tp.phase,
       projectDir: orc.getTeamProjectDir(),
     };
-    break; // only one team at a time
   }
 
   saveTeamState({ agents, team });
@@ -199,31 +188,8 @@ function mapOrchestratorEvent(e: OrchestratorEvent): GatewayEvent | null {
     case "task:started":
       return { type: "TASK_STARTED", agentId: e.agentId, taskId: e.taskId, prompt: e.prompt };
     case "task:done": {
-      // Detect create→design transition: leader output contains [PLAN]
-      const resultText = (e.result?.summary ?? "") + (e.result?.fullOutput ?? "");
-      if (resultText && /\[PLAN\]/i.test(resultText)) {
-        for (const [teamId, tp] of teamPhases) {
-          if (tp.leadAgentId === e.agentId && tp.phase === "create") {
-            // Capture the plan output as originalTask so design-phase feedback has context
-            const planOutput = e.result?.fullOutput ?? e.result?.summary ?? "";
-            if (planOutput) {
-              orc.setOriginalTask(e.agentId, planOutput);
-              console.log(`[Gateway] Captured plan from create phase (${planOutput.length} chars) for design context`);
-            }
-            publishTeamPhase(teamId, "design", e.agentId);
-            break;
-          }
-        }
-      }
-      // Detect execute→complete transition: team lead finished with isFinalResult
-      if (e.isFinalResult) {
-        for (const [teamId, tp] of teamPhases) {
-          if (tp.leadAgentId === e.agentId && tp.phase === "execute") {
-            publishTeamPhase(teamId, "complete", e.agentId);
-            break;
-          }
-        }
-      }
+      // Phase transitions (create→design, execute→complete) are now handled
+      // internally by orchestrator's PhaseMachine — no detection needed here.
       return { type: "TASK_DONE", agentId: e.agentId, taskId: e.taskId, result: e.result, isFinalResult: e.isFinalResult };
     }
     case "task:failed":
@@ -246,6 +212,14 @@ function mapOrchestratorEvent(e: OrchestratorEvent): GatewayEvent | null {
       return { type: "AGENT_FIRED", agentId: e.agentId };
     case "task:result-returned":
       return { type: "TASK_RESULT_RETURNED", fromAgentId: e.fromAgentId, toAgentId: e.toAgentId, taskId: e.taskId, summary: e.summary, success: e.success };
+    case "team:phase": {
+      // Phase transitions are managed by orchestrator — persist and publish to wire protocol
+      const phaseEvt = { type: "TEAM_PHASE" as const, teamId: e.teamId, phase: e.phase, leadAgentId: e.leadAgentId };
+      bufferEvent(phaseEvt);
+      publishEvent(phaseEvt);
+      persistTeamState();
+      return null; // already published directly
+    }
     // New events (worktree, retry) — log only, no wire protocol equivalent yet
     case "task:retrying":
       console.log(`[Retry] Agent ${e.agentId} retrying task ${e.taskId} (attempt ${e.attempt}/${e.maxRetries})`);
@@ -334,13 +308,9 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
         agent = orc.getAgent(parsed.agentId);
         if (isLead && agent) {
           orc.setTeamLead(parsed.agentId);
-          let hasTeamPhase = false;
-          for (const [, tp] of teamPhases) {
-            if (tp.leadAgentId === parsed.agentId) { hasTeamPhase = true; break; }
-          }
-          if (!hasTeamPhase) {
+          if (!orc.getTeamPhase(parsed.agentId)) {
             const teamId = `team-${parsed.agentId}`;
-            publishTeamPhase(teamId, "create", parsed.agentId);
+            orc.setTeamPhase(teamId, "create", parsed.agentId);
           }
         }
         persistTeamState();
@@ -348,24 +318,8 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
       if (agent) {
         console.log(`[Gateway] RUN_TASK: agent=${parsed.agentId}, isLead=${orc.isTeamLead(parsed.agentId)}, hasTeam=${orc.getAllAgents().length > 1}`);
 
-        // Look up team phase for team leads and pass phaseOverride
-        let phaseOverride: string | undefined;
-        if (orc.isTeamLead(parsed.agentId)) {
-          for (const [, tp] of teamPhases) {
-            if (tp.leadAgentId === parsed.agentId) {
-              phaseOverride = tp.phase;
-              // If user sends message in complete phase, transition back to execute
-              if (tp.phase === "complete") {
-                const teamId = Array.from(teamPhases.entries()).find(([, v]) => v.leadAgentId === parsed.agentId)?.[0];
-                if (teamId) {
-                  publishTeamPhase(teamId, "execute", parsed.agentId);
-                  phaseOverride = "execute";
-                }
-              }
-              break;
-            }
-          }
-        }
+        // Phase override from orchestrator's PhaseMachine (handles complete→execute automatically)
+        const phaseOverride = orc.getPhaseOverrideForLeader(parsed.agentId);
         // Inject audience suggestions into leader prompt
         let finalPrompt = parsed.prompt;
         console.log(`[SUGGEST] RUN_TASK check: suggestions=${suggestions.length}, isLead=${orc.isTeamLead(parsed.agentId)}, phase=${phaseOverride}`);
@@ -481,7 +435,7 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
         bufferEvent(teamChatEvt);
         publishEvent(teamChatEvt);
 
-        publishTeamPhase(teamId, "create", leadAgentId);
+        orc.setTeamPhase(teamId, "create", leadAgentId);
         const greetTaskId = nanoid();
         orc.runTask(leadAgentId, greetTaskId, "Greet the user and ask what they would like to build.", { phaseOverride: "create" });
       }
@@ -500,7 +454,7 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
         if (pid) scanner?.addGracePid(pid);
       }
       orc.fireTeam();
-      teamPhases.clear();
+      orc.clearAllTeamPhases();
       clearTeamState();
       break;
     }
@@ -530,28 +484,15 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
     case "APPROVE_PLAN": {
       const agentId = parsed.agentId;
       console.log(`[Gateway] APPROVE_PLAN: agent=${agentId}`);
-      // Capture the approved plan as originalTask so the execute template can reference it
-      const approvedPlan = orc.getLeaderLastOutput(agentId);
-      if (approvedPlan) {
-        orc.setOriginalTask(agentId, approvedPlan);
-        console.log(`[Gateway] Captured approved plan (${approvedPlan.length} chars) for leader ${agentId}`);
-      }
       // Create a unique project directory for this team
+      const approvedPlan = orc.getLeaderLastOutput(agentId);
       const projectName = extractProjectName(approvedPlan ?? "project");
       setProjectName(projectName);
       const projectDir = createUniqueProjectDir(config.defaultWorkspace, projectName);
       orc.setTeamProjectDir(projectDir);
-      // Find team phase for this leader (recover from orchestrator if needed)
-      let approveTeamId: string | undefined;
-      for (const [teamId, tp] of teamPhases) {
-        if (tp.leadAgentId === agentId) { approveTeamId = teamId; break; }
-      }
-      if (!approveTeamId) {
-        const agentInfo = orc.getAllAgents().find(a => a.agentId === agentId);
-        if (agentInfo?.teamId) approveTeamId = agentInfo.teamId;
-      }
-      if (approveTeamId) {
-        publishTeamPhase(approveTeamId, "execute", agentId);
+      // Transition design → execute (orchestrator handles plan capture + phase event)
+      const phaseResult = orc.approvePlan(agentId);
+      if (phaseResult) {
         const taskId = nanoid();
         orc.runTask(agentId, taskId, `The user approved your plan. Execute it now by delegating tasks to your team members. All work must go in the project directory: ${path.basename(projectDir)}/`, { phaseOverride: "execute" });
       }
@@ -568,9 +509,10 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
         palette: a.palette, teamId: a.teamId, isTeamLead: orc.isTeamLead(a.agentId),
       }));
       let archiveTeam: TeamState["team"] = null;
-      for (const [teamId, tp] of teamPhases) {
-        archiveTeam = { teamId, leadAgentId: tp.leadAgentId, phase: tp.phase, projectDir: orc.getTeamProjectDir() };
-        break;
+      const archivePhases = orc.getAllTeamPhases();
+      if (archivePhases.length > 0) {
+        const tp = archivePhases[0];
+        archiveTeam = { teamId: tp.teamId, leadAgentId: tp.leadAgentId, phase: tp.phase, projectDir: orc.getTeamProjectDir() };
       }
       archiveProject(archiveAgents, archiveTeam);
       resetProjectBuffer();
@@ -590,25 +532,15 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
         });
       }
 
-      // Find teamId from teamPhases, or recover from orchestrator agent info
-      let foundTeamId: string | undefined;
-      for (const [teamId, tp] of teamPhases) {
-        if (tp.leadAgentId === agentId) { foundTeamId = teamId; break; }
-      }
+      // Find teamId from orchestrator, or recover
+      let foundTeamId = orc.getAllTeamPhases().find(tp => tp.leadAgentId === agentId)?.teamId;
       if (!foundTeamId) {
         const agentInfo = orc.getAllAgents().find(a => a.agentId === agentId);
-        if (agentInfo?.teamId) foundTeamId = agentInfo.teamId;
+        foundTeamId = agentInfo?.teamId ?? `team-${agentId}`;
       }
-
-      if (!foundTeamId) {
-        // Recover: create a synthetic team entry (e.g. after gateway restart when teamPhases was lost)
-        foundTeamId = `team-${agentId}`;
-        teamPhases.set(foundTeamId, { phase: "create", leadAgentId: agentId });
-        console.log(`[Gateway] END_PROJECT: recovered team ${foundTeamId} for agent ${agentId}`);
-      }
-      publishTeamPhase(foundTeamId, "create", agentId);
-      // Ensure agent is recognized as team lead
+      // Ensure agent is recognized as team lead, then reset to create phase
       orc.setTeamLead(agentId);
+      orc.setTeamPhase(foundTeamId, "create", agentId);
       const greetTaskId = nanoid();
       orc.runTask(agentId, greetTaskId, "Greet the user and ask what they would like to build next.", { phaseOverride: "create" });
       break;
@@ -637,17 +569,17 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
           agentId: agent.agentId,
           status: agent.status,
         });
-        // Restore teamPhases from orchestrator state if lost (e.g. after gateway restart)
-        if (agent.isTeamLead && agent.teamId && !teamPhases.has(agent.teamId)) {
-          teamPhases.set(agent.teamId, { phase: "create", leadAgentId: agent.agentId });
+        // Restore team phase in orchestrator if lost (e.g. after gateway restart)
+        if (agent.isTeamLead && agent.teamId && !orc.getTeamPhase(agent.agentId)) {
+          orc.setTeamPhase(agent.teamId, "create", agent.agentId);
           console.log(`[Gateway] Restored team phase for ${agent.teamId} (leader=${agent.agentId})`);
         }
       }
-      // Broadcast team phase state
-      for (const [teamId, tp] of teamPhases) {
+      // Broadcast team phase state from orchestrator
+      for (const tp of orc.getAllTeamPhases()) {
         publishEvent({
           type: "TEAM_PHASE",
-          teamId,
+          teamId: tp.teamId,
           phase: tp.phase,
           leadAgentId: tp.leadAgentId,
         });
@@ -821,13 +753,13 @@ async function main() {
         // Move to "create" so leader is ready for the next user instruction.
         // Session history is preserved so leader retains project context.
         console.log(`[Gateway] Team was in "execute" phase — moving to "create" (delegation state lost on restart)`);
-        teamPhases.set(t.teamId, { phase: "create", leadAgentId: t.leadAgentId });
-        if (t.projectDir) orc.setTeamProjectDir(t.projectDir);
+        orc.setTeamPhase(t.teamId, "create", t.leadAgentId);
       } else {
-        teamPhases.set(t.teamId, { phase: t.phase, leadAgentId: t.leadAgentId });
-        if (t.projectDir) orc.setTeamProjectDir(t.projectDir);
+        orc.setTeamPhase(t.teamId, t.phase, t.leadAgentId);
       }
-      console.log(`[Gateway] Restored team ${t.teamId}: phase=${t.phase}→${teamPhases.get(t.teamId)?.phase}, lead=${t.leadAgentId}, projectDir=${t.projectDir}`);
+      if (t.projectDir) orc.setTeamProjectDir(t.projectDir);
+      const restoredPhase = orc.getTeamPhase(t.leadAgentId);
+      console.log(`[Gateway] Restored team ${t.teamId}: phase=${t.phase}→${restoredPhase}, lead=${t.leadAgentId}, projectDir=${t.projectDir}`);
     }
   }
 
@@ -862,6 +794,7 @@ async function main() {
   orc.on("agent:created", forwardEvent);
   orc.on("agent:fired", forwardEvent);
   orc.on("task:result-returned", forwardEvent);
+  orc.on("team:phase", forwardEvent);
 
   // Start external output reader
   outputReader = new ExternalOutputReader();

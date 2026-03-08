@@ -1,16 +1,16 @@
 import { EventEmitter } from "events";
-import { existsSync } from "fs";
-import path from "path";
 import { nanoid } from "nanoid";
+import { CONFIG } from "./config.js";
 import { AgentSession, clearSessionId } from "./agent-session.js";
-import { resolveAgentPath } from "./resolve-path.js";
 import { AgentManager } from "./agent-manager.js";
 import { DelegationRouter } from "./delegation.js";
 import { PromptEngine } from "./prompt-templates.js";
-import { previewServer } from "./preview-server.js";
 import { RetryTracker } from "./retry.js";
+import { PhaseMachine } from "./phase-machine.js";
+import { finalizeTeamResult } from "./result-finalizer.js";
 import { createWorktree, mergeWorktree, removeWorktree } from "./worktree.js";
 import type { AIBackend } from "./ai-backend.js";
+import type { TeamPreview } from "./result-finalizer.js";
 import type {
   OrchestratorOptions,
   CreateAgentOpts,
@@ -18,6 +18,7 @@ import type {
   RunTaskOpts,
   OrchestratorEvent,
   OrchestratorEventMap,
+  TeamPhase,
   Decision,
 } from "./types.js";
 
@@ -26,6 +27,7 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
   private delegationRouter: DelegationRouter;
   private promptEngine: PromptEngine;
   private retryTracker: RetryTracker | null;
+  private phaseMachine = new PhaseMachine();
   private backends = new Map<string, AIBackend>();
   private defaultBackendId: string;
   private workspace: string;
@@ -33,7 +35,7 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
   private worktreeEnabled: boolean;
   private worktreeMerge: boolean;
   /** Preview info captured from the first dev worker that produces one — not from QA/reviewer */
-  private teamPreview: { previewUrl?: string; previewPath?: string; entryFile?: string; previewCmd?: string; previewPort?: number } | null = null;
+  private teamPreview: TeamPreview | null = null;
   /** Accumulated changedFiles from all workers in the current team session */
   private teamChangedFiles = new Set<string>();
   /** Guard against emitting isFinalResult more than once per execute cycle. */
@@ -378,6 +380,80 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
   }
 
   // ---------------------------------------------------------------------------
+  // Phase management
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Set a team phase explicitly (for initialization and state restoration).
+   * Emits a team:phase event.
+   */
+  setTeamPhase(teamId: string, phase: TeamPhase, leadAgentId: string): void {
+    const info = this.phaseMachine.setPhase(teamId, phase, leadAgentId);
+    this.emitEvent({ type: "team:phase", teamId: info.teamId, phase: info.phase, leadAgentId: info.leadAgentId });
+  }
+
+  /**
+   * Approve the plan — transitions design → execute, captures plan, creates project dir context.
+   * Returns the team phase info, or null if no matching team.
+   */
+  approvePlan(leadAgentId: string): { teamId: string; phase: TeamPhase } | null {
+    // Capture the approved plan as originalTask
+    const approvedPlan = this.getLeaderLastOutput(leadAgentId);
+    if (approvedPlan) {
+      this.setOriginalTask(leadAgentId, approvedPlan);
+    }
+
+    const info = this.phaseMachine.approvePlan(leadAgentId);
+    if (!info) return null;
+
+    this.emitEvent({ type: "team:phase", teamId: info.teamId, phase: info.phase, leadAgentId: info.leadAgentId });
+    return { teamId: info.teamId, phase: info.phase };
+  }
+
+  /**
+   * Get the phase override for a team lead when running a task.
+   * Handles complete → execute transition automatically.
+   */
+  getPhaseOverrideForLeader(leadAgentId: string): TeamPhase | undefined {
+    if (!this.agentManager.isTeamLead(leadAgentId)) return undefined;
+    const result = this.phaseMachine.handleUserMessage(leadAgentId);
+    if (!result) return undefined;
+    // If transition occurred (complete → execute), emit event
+    if (result.transitioned) {
+      this.emitEvent({ type: "team:phase", teamId: result.phaseInfo.teamId, phase: result.phaseOverride, leadAgentId });
+    }
+    return result.phaseOverride;
+  }
+
+  /**
+   * Get current phase for a team leader.
+   */
+  getTeamPhase(leadAgentId: string): TeamPhase | undefined {
+    return this.phaseMachine.getPhaseForLeader(leadAgentId)?.phase;
+  }
+
+  /**
+   * Get all team phase info (for state persistence/broadcasting).
+   */
+  getAllTeamPhases(): Array<{ teamId: string; phase: TeamPhase; leadAgentId: string }> {
+    return this.phaseMachine.getAllPhases();
+  }
+
+  /**
+   * Clear a specific team's phase (FIRE_TEAM).
+   */
+  clearTeamPhase(teamId: string): void {
+    this.phaseMachine.clear(teamId);
+  }
+
+  /**
+   * Clear all team phases.
+   */
+  clearAllTeamPhases(): void {
+    this.phaseMachine.clearAll();
+  }
+
+  // ---------------------------------------------------------------------------
   // Cleanup
   // ---------------------------------------------------------------------------
 
@@ -416,7 +492,7 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
           if (retryPrompt) {
             const session = this.agentManager.get(agentId);
             if (session) {
-              setTimeout(() => session.runTask(taskId, retryPrompt), 500);
+              setTimeout(() => session.runTask(taskId, retryPrompt), CONFIG.timing.retryDelayMs);
               return; // Don't emit the task:failed — we're retrying
             }
           }
@@ -437,6 +513,24 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
         }
       }
       this.retryTracker.clear(taskId);
+    }
+
+    // Detect phase transitions on task completion
+    if (event.type === "task:done") {
+      // create → design: leader output contains [PLAN]
+      const resultText = (event.result?.summary ?? "") + (event.result?.fullOutput ?? "");
+      if (resultText) {
+        const phaseInfo = this.phaseMachine.checkPlanDetected(agentId, resultText);
+        if (phaseInfo) {
+          // Capture the plan output as originalTask so design-phase feedback has context
+          const planOutput = event.result?.fullOutput ?? event.result?.summary ?? "";
+          if (planOutput) {
+            this.setOriginalTask(agentId, planOutput);
+            console.log(`[Orchestrator] Captured plan from create phase (${planOutput.length} chars) for design context`);
+          }
+          this.emitEvent({ type: "team:phase", teamId: phaseInfo.teamId, phase: phaseInfo.phase, leadAgentId: phaseInfo.leadAgentId });
+        }
+      }
     }
 
     // Handle worktree merge on task completion
@@ -515,161 +609,32 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
           this.teamFinalized = true;
           event.isFinalResult = true;
 
+          // execute → complete transition
+          const completeInfo = this.phaseMachine.checkFinalResult(agentId);
+          if (completeInfo) {
+            this.emitEvent({ type: "team:phase", teamId: completeInfo.teamId, phase: completeInfo.phase, leadAgentId: completeInfo.leadAgentId });
+          }
+
           // Clear any straggler delegations so they don't restart the leader later
           this.delegationRouter.clearAgent(agentId);
 
-          // Merge accumulated worker changedFiles into the leader's final result
-          if (event.result && this.teamChangedFiles.size > 0) {
-            const merged = new Set(event.result.changedFiles ?? []);
-            for (const f of this.teamChangedFiles) merged.add(f);
-            event.result.changedFiles = Array.from(merged);
-          }
-
-          // Always inject the correct project directory — leader's self-reported PROJECT_DIR is unreliable
+          // Finalize: merge team data, validate entry file, resolve preview URL
           if (event.result) {
-            const teamDir = this.delegationRouter.getTeamProjectDir();
-            if (teamDir) {
-              event.result.projectDir = teamDir;
-            }
-          }
-
-          // Use preview fields captured from dev workers — these are ground truth.
-          // Worker created the actual files, so its fields are always more reliable than the leader's.
-          if (this.teamPreview && event.result) {
-            if (this.teamPreview.previewUrl) {
-              event.result.previewUrl = this.teamPreview.previewUrl;
-              event.result.previewPath = this.teamPreview.previewPath;
-            }
-            // Always prefer worker's entry/cmd/port over leader's (leader often hallucinates filenames)
-            if (this.teamPreview.entryFile) event.result.entryFile = this.teamPreview.entryFile;
-            if (this.teamPreview.previewCmd) event.result.previewCmd = this.teamPreview.previewCmd;
-            if (this.teamPreview.previewPort) event.result.previewPort = this.teamPreview.previewPort;
-          }
-
-          // Validate entryFile against disk — agents (both dev and leader) often hallucinate filenames.
-          // Use resolveAgentPath to handle all path variations (relative to project, workspace, or basename).
-          if (event.result?.entryFile) {
-            const projectDir = this.delegationRouter.getTeamProjectDir() ?? this.workspace;
-            const resolved = resolveAgentPath(event.result.entryFile, projectDir, this.workspace);
-            if (resolved) {
-              // Store as relative to projectDir for downstream consistency
-              event.result.entryFile = path.relative(projectDir, resolved);
-            } else {
-              // Not found on disk — fall back to changedFiles
-              const allFiles = event.result.changedFiles ?? [];
-              const ext = path.extname(event.result.entryFile).toLowerCase();
-              const candidate = allFiles
-                .map(f => path.basename(f))
-                .find(f => path.extname(f).toLowerCase() === ext);
-              if (candidate) {
-                console.log(`[Orchestrator] entryFile "${event.result.entryFile}" not found on disk, using "${candidate}" from changedFiles`);
-                event.result.entryFile = candidate;
-              } else {
-                console.log(`[Orchestrator] entryFile "${event.result.entryFile}" not found on disk, clearing`);
-                event.result.entryFile = undefined;
-              }
-            }
-          }
-
-          // Auto-construct previewCmd for non-HTML entryFile if no previewCmd was provided
-          if (event.result?.entryFile && !event.result.previewCmd && !/\.html?$/i.test(event.result.entryFile)) {
-            const ext = path.extname(event.result.entryFile).toLowerCase();
-            const runners: Record<string, string> = { ".py": "python3", ".js": "node", ".rb": "ruby", ".sh": "bash" };
-            const runner = runners[ext];
-            if (runner) {
-              event.result.previewCmd = `${runner} ${event.result.entryFile}`;
-              console.log(`[Orchestrator] Auto-constructed previewCmd: ${event.result.previewCmd}`);
-            }
-          }
-
-          // Fallback: no dev worker had a preview — scan all workers' changedFiles for .html
-          if (!event.result?.previewUrl && event.result) {
-            for (const worker of this.agentManager.getAll()) {
-              if (worker.agentId === agentId) continue;
-              const { previewUrl, previewPath } = worker.detectPreview();
-              if (previewUrl) {
-                event.result.previewUrl = previewUrl;
-                event.result.previewPath = previewPath;
-                break;
-              }
-            }
-          }
-
-          // Fallback: leader's PREVIEW_CMD
-          if (!event.result?.previewUrl && event.result?.previewCmd) {
-            const projectDir = this.delegationRouter.getTeamProjectDir() ?? this.workspace;
-            if (event.result.previewPort) {
-              // Web server: run command, proxy via port
-              const url = previewServer.runCommand(event.result.previewCmd, projectDir, event.result.previewPort);
-              if (url) {
-                event.result.previewUrl = url;
-                console.log(`[Orchestrator] Preview from leader PREVIEW_CMD (port ${event.result.previewPort}): ${url}`);
-              }
-            } else {
-              // Desktop/CLI app: don't auto-launch — user clicks Launch button on the frontend
-              console.log(`[Orchestrator] Desktop app ready (user can Launch): ${event.result.previewCmd}`);
-            }
-          }
-
-          // Fallback: leader's ENTRY_FILE
-          if (!event.result?.previewUrl && event.result?.entryFile) {
-            const entryFile = event.result.entryFile;
-            const projectDir = this.delegationRouter.getTeamProjectDir() ?? this.workspace;
-            if (/\.html?$/i.test(entryFile)) {
-              const absPath = resolveAgentPath(entryFile, projectDir, this.workspace);
-              if (absPath) {
-                const url = previewServer.serve(absPath);
-                if (url) {
-                  event.result.previewUrl = url;
-                  event.result.previewPath = absPath;
-                  console.log(`[Orchestrator] Preview from leader ENTRY_FILE: ${url}`);
+            finalizeTeamResult({
+              result: event.result,
+              teamPreview: this.teamPreview,
+              teamChangedFiles: this.teamChangedFiles,
+              projectDir: this.delegationRouter.getTeamProjectDir(),
+              workspace: this.workspace,
+              detectWorkerPreview: () => {
+                for (const worker of this.agentManager.getAll()) {
+                  if (worker.agentId === agentId) continue;
+                  const { previewUrl, previewPath } = worker.detectPreview();
+                  if (previewUrl) return { previewUrl, previewPath };
                 }
-              }
-            }
-            // Non-HTML entry file: don't auto-launch — user clicks Launch button
-          }
-
-          // Fallback: scan accumulated changedFiles for .html
-          if (!event.result?.previewUrl && event.result && this.teamChangedFiles.size > 0) {
-            const projectDir = this.delegationRouter.getTeamProjectDir() ?? this.workspace;
-            let htmlFile: string | undefined;
-            for (const f of this.teamChangedFiles) {
-              if (!/\.html?$/i.test(f)) continue;
-              if (resolveAgentPath(f, projectDir, this.workspace)) { htmlFile = f; break; }
-            }
-            if (htmlFile) {
-              const absPath = resolveAgentPath(htmlFile, projectDir, this.workspace)!;
-              const url = previewServer.serve(absPath);
-              if (url) {
-                event.result.previewUrl = url;
-                event.result.previewPath = absPath;
-                console.log(`[Orchestrator] Preview from teamChangedFiles: ${url}`);
-              }
-            }
-          }
-
-          // Last resort: scan project directory for common build output (Vite, CRA, etc.)
-          // Only scan if we have a specific project directory — never scan the entire workspace root
-          if (!event.result?.previewUrl && event.result) {
-            const projectDir = this.delegationRouter.getTeamProjectDir();
-            if (projectDir) {
-              const candidates = [
-                "dist/index.html", "build/index.html", "out/index.html",   // common build dirs
-                "index.html", "public/index.html",                          // static projects
-              ];
-              for (const candidate of candidates) {
-                const absPath = path.join(projectDir, candidate);
-                if (existsSync(absPath)) {
-                  const url = previewServer.serve(absPath);
-                  if (url) {
-                    event.result.previewUrl = url;
-                    event.result.previewPath = absPath;
-                    console.log(`[Orchestrator] Preview from project scan: ${absPath}`);
-                    break;
-                  }
-                }
-              }
-            }
+                return null;
+              },
+            });
           }
 
           const summary = event.result?.summary?.slice(0, 200) ?? "All tasks completed.";

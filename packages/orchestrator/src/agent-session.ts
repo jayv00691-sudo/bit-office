@@ -1,12 +1,14 @@
 import { spawn, execSync, type ChildProcess } from "child_process";
 import path from "path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { homedir } from "os";
-import { previewServer } from "./preview-server.js";
-import { resolveAgentPath } from "./resolve-path.js";
+import { CONFIG } from "./config.js";
+import { resolvePreview } from "./preview-resolver.js";
+import { parseAgentOutput } from "./output-parser.js";
 import { nanoid } from "nanoid";
 import type { AIBackend } from "./ai-backend.js";
 import type { AgentStatus, TaskResultPayload, OrchestratorEvent } from "./types.js";
+import type { TemplateName } from "./prompt-templates.js";
 
 /* ── Persist session IDs across restarts ────────────────────────── */
 const SESSION_FILE = path.join(homedir(), ".bit-office", "agent-sessions.json");
@@ -69,7 +71,7 @@ export interface AgentSessionOpts {
   backend: AIBackend;
   sandboxMode?: "full" | "safe";
   onEvent: (event: OrchestratorEvent) => void;
-  renderPrompt: (templateName: string, vars: Record<string, string | undefined>) => string;
+  renderPrompt: (templateName: TemplateName, vars: Record<string, string | undefined>) => string;
   /** Whether this agent is the team lead (uses leader template, no tools) */
   isTeamLead?: boolean;
   teamId?: string;
@@ -100,7 +102,7 @@ export class AgentSession {
   private sessionId: string | null;
   private taskQueue: QueuedTask[] = [];
   private onEvent: (event: OrchestratorEvent) => void;
-  private _renderPrompt: (templateName: string, vars: Record<string, string | undefined>) => string;
+  private _renderPrompt: (templateName: TemplateName, vars: Record<string, string | undefined>) => string;
   private timedOut = false;
   private _isTeamLead: boolean;
   /** Whether this leader has already been through execute phase at least once */
@@ -223,7 +225,7 @@ export class AgentSession {
       let fullPrompt: string;
       if (this._isTeamLead && phaseOverride && ["create", "design", "complete"].includes(phaseOverride)) {
         // Conversational phases: use continuation template if resuming, full template if first turn
-        const templateName = this.hasHistory ? `leader-${phaseOverride}-continue` : `leader-${phaseOverride}`;
+        const templateName = (this.hasHistory ? `leader-${phaseOverride}-continue` : `leader-${phaseOverride}`) as TemplateName;
         fullPrompt = this._renderPrompt(templateName, templateVars);
       } else if (this._isTeamLead) {
         // First time entering execute: use leader-initial (full delegation rules)
@@ -264,10 +266,10 @@ export class AgentSession {
         detached: true,
       });
 
-      // Task timeout: leader 3 min (delegation planning), worker 8 min (real coding)
+      // Task timeout: leader (delegation planning), worker (real coding)
       // Use SIGKILL (not SIGTERM) — Claude CLI ignores SIGTERM while waiting on API calls
       this.timedOut = false;
-      const TASK_TIMEOUT_MS = this._isTeamLead ? 3 * 60 * 1000 : 8 * 60 * 1000;
+      const TASK_TIMEOUT_MS = this._isTeamLead ? CONFIG.timing.leaderTimeoutMs : CONFIG.timing.workerTimeoutMs;
       this.taskTimeout = setTimeout(() => {
         if (this.process?.pid) {
           console.log(`[Agent ${this.agentId}] Task timed out after ${TASK_TIMEOUT_MS / 1000}s, killing`);
@@ -498,7 +500,7 @@ export class AgentSession {
               result: { summary, fullOutput, changedFiles, diffStat: "", testResult: "unknown", previewUrl, previewPath, entryFile, projectDir, previewCmd, previewPort, tokenUsage },
             });
             this.onTaskComplete?.(this.agentId, completedTaskId, summary, true);
-            this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, 5000);
+            this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, CONFIG.timing.idleDoneDelayMs);
           } else {
             const errorMsg = this.stdoutBuffer.slice(0, 300) || this.stderrBuffer.slice(-300) || `Process exited with code ${code}`;
             this._lastResult = `failed: ${errorMsg.slice(0, 120)}`;
@@ -510,7 +512,7 @@ export class AgentSession {
               error: errorMsg,
             });
             this.onTaskComplete?.(this.agentId, completedTaskId, errorMsg, false);
-            this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, 3000);
+            this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, CONFIG.timing.idleErrorDelayMs);
           }
           this.dequeueNext();
         } catch (err) {
@@ -530,7 +532,7 @@ export class AgentSession {
           taskId,
           error: err.message,
         });
-        this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, 3000);
+        this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, CONFIG.timing.idleErrorDelayMs);
       });
     } catch (err) {
       this.setStatus("error");
@@ -560,152 +562,27 @@ export class AgentSession {
   detectPreview(): { previewUrl: string | undefined; previewPath: string | undefined } {
     const result = this.extractResult();
     const baseCwd = this.currentCwd ?? this.workspace;
-    // Prefer the agent's reported PROJECT_DIR for preview scanning
     const cwd = result.projectDir
       ? (path.isAbsolute(result.projectDir) ? result.projectDir : path.join(baseCwd, result.projectDir))
       : baseCwd;
-    let previewUrl: string | undefined;
-    let previewPath: string | undefined;
 
-    // 1) PREVIEW_CMD: run a process
-    if (result.previewCmd) {
-      if (result.previewPort) {
-        // Web server: run command, proxy via port
-        previewUrl = previewServer.runCommand(result.previewCmd, cwd, result.previewPort);
-        if (previewUrl) return { previewUrl, previewPath: undefined };
-      } else {
-        // Desktop/CLI app: don't auto-launch — user clicks Launch button on the frontend
-        return { previewUrl: undefined, previewPath: undefined };
-      }
-    }
-
-    // 2) ENTRY_FILE from structured output
-    if (result.entryFile) {
-      if (/\.html?$/i.test(result.entryFile)) {
-        previewPath = resolveAgentPath(result.entryFile, cwd, baseCwd);
-        if (previewPath) {
-          previewUrl = previewServer.serve(previewPath);
-          if (previewUrl) return { previewUrl, previewPath };
-        }
-      }
-      // Non-HTML entry file (e.g. game.py): don't auto-launch — user clicks Launch button
-    }
-
-    // 3) Explicit PREVIEW: http://... in output
-    const previewMatch = this.stdoutBuffer.match(/PREVIEW:\s*(https?:\/\/[^\s*)\]>]+)/i);
-    if (previewMatch) {
-      return { previewUrl: previewMatch[1].replace(/[*)\]>]+$/, ""), previewPath: undefined };
-    }
-
-    // 4) .html file path mentioned in output text
-    const fileMatch = this.stdoutBuffer.match(/(?:open\s+)?((?:\/[\w./_-]+|[\w./_-]+)\.html?)\b/i);
-    if (fileMatch) {
-      previewPath = resolveAgentPath(fileMatch[1], cwd, baseCwd);
-      if (previewPath) {
-        previewUrl = previewServer.serve(previewPath);
-        if (previewUrl) return { previewUrl, previewPath };
-      }
-    }
-
-    // 5) .html in changedFiles
-    for (const f of result.changedFiles) {
-      if (!/\.html?$/i.test(f)) continue;
-      previewPath = resolveAgentPath(f, cwd, baseCwd);
-      if (previewPath) {
-        previewUrl = previewServer.serve(previewPath);
-        if (previewUrl) return { previewUrl, previewPath };
-        break;
-      }
-    }
-
-    // 6) Scan cwd for common build output (dist/index.html, build/index.html, etc.)
-    const candidates = [
-      "dist/index.html", "build/index.html", "out/index.html",
-      "index.html", "public/index.html",
-    ];
-    for (const candidate of candidates) {
-      const absPath = path.join(cwd, candidate);
-      if (existsSync(absPath)) {
-        previewUrl = previewServer.serve(absPath);
-        if (previewUrl) return { previewUrl, previewPath: absPath };
-      }
-    }
-
-    return { previewUrl: undefined, previewPath: undefined };
+    return resolvePreview({
+      entryFile: result.entryFile,
+      previewCmd: result.previewCmd,
+      previewPort: result.previewPort,
+      changedFiles: result.changedFiles,
+      stdout: this.stdoutBuffer,
+      cwd,
+      workspace: baseCwd,
+    });
   }
 
   /**
    * Parse stdoutBuffer for structured result (SUMMARY/STATUS/FILES_CHANGED).
    * Falls back to a cleaned-up excerpt of the raw output.
    */
-  private extractResult(): { summary: string; fullOutput: string; changedFiles: string[]; entryFile?: string; projectDir?: string; previewCmd?: string; previewPort?: number } {
-    const raw = this.stdoutBuffer || this._lastResultText || "";
-    const fullOutput = raw.slice(0, 3000);
-
-    // Try to extract structured fields from worker output format
-    const summaryMatch = raw.match(/SUMMARY:\s*(.+)/i);
-    const filesMatch = raw.match(/FILES_CHANGED:\s*(.+)/i);
-    const entryFileMatch = raw.match(/ENTRY_FILE:\s*(.+)/i);
-    const projectDirMatch = raw.match(/PROJECT_DIR:\s*(.+)/i);
-    const previewCmdMatch = raw.match(/PREVIEW_CMD:\s*(.+)/i);
-    const previewPortMatch = raw.match(/PREVIEW_PORT:\s*(\d+)/i);
-
-    const changedFiles: string[] = [];
-    if (filesMatch) {
-      const fileList = filesMatch[1].trim();
-      for (const f of fileList.split(/[,\n]+/)) {
-        const cleaned = f.trim().replace(/^[-*]\s*/, "");
-        if (cleaned) changedFiles.push(cleaned);
-      }
-    }
-
-    // Filter out placeholder values that agents hallucinate
-    const isPlaceholder = (v: string | undefined): boolean =>
-      !v || /^[\[(].*not provided.*[\])]$/i.test(v) || /^[\[(].*n\/?a.*[\])]$/i.test(v) || /^none$/i.test(v);
-
-    const entryFile = isPlaceholder(entryFileMatch?.[1]?.trim()) ? undefined : entryFileMatch![1].trim();
-    const projectDir = isPlaceholder(projectDirMatch?.[1]?.trim()) ? undefined : projectDirMatch![1].trim();
-    const previewCmd = isPlaceholder(previewCmdMatch?.[1]?.trim()) ? undefined : previewCmdMatch![1].trim();
-    const previewPort = previewPortMatch ? parseInt(previewPortMatch[1], 10) : undefined;
-
-    if (summaryMatch) {
-      return { summary: summaryMatch[1].trim(), fullOutput, changedFiles, entryFile, projectDir, previewCmd, previewPort };
-    }
-
-    // No structured SUMMARY — extract the most meaningful part
-    const lines = raw.split("\n").filter(l => l.trim());
-    const delegationRe = /^@(\w+):/;
-    const noisePatterns = [
-      /^STATUS:\s/i,
-      /^FILES_CHANGED:\s/i,
-      /^SUMMARY:\s/i,
-      /^\[Assigned by /,
-      /^mcp\s/i,
-      /^╔|^║|^╚/,
-      /^\s*[-*]{3,}\s*$/,
-    ];
-
-    const delegationTargets: string[] = [];
-    const meaningful: string[] = [];
-    for (const l of lines) {
-      const trimmed = l.trim();
-      const dm = trimmed.match(delegationRe);
-      if (dm) {
-        delegationTargets.push(dm[1]);
-      } else if (!noisePatterns.some(p => p.test(trimmed))) {
-        meaningful.push(l);
-      }
-    }
-
-    // If output is primarily delegations (leader), summarize the delegation targets
-    if (meaningful.length === 0 && delegationTargets.length > 0) {
-      return { summary: `Delegated tasks to ${delegationTargets.join(", ")}`, fullOutput, changedFiles, entryFile, projectDir };
-    }
-
-    const firstChunk = meaningful.slice(0, 5).join("\n").trim();
-    const summary = firstChunk.slice(0, 500) || "Task completed";
-
-    return { summary, fullOutput, changedFiles, entryFile, projectDir };
+  private extractResult() {
+    return parseAgentOutput(this.stdoutBuffer, this._lastResultText);
   }
 
   private dequeueNext() {
@@ -713,7 +590,7 @@ export class AgentSession {
     const next = this.taskQueue.shift()!;
     setTimeout(() => {
       this.runTask(next.taskId, next.prompt, next.repoPath, next.teamContext, false, next.phaseOverride);
-    }, 100);
+    }, CONFIG.timing.dequeueDelayMs);
   }
 
   private cancelled = false;
@@ -752,7 +629,7 @@ export class AgentSession {
       taskId: cancelledTaskId,
       error: "Task cancelled by user",
     });
-    this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, 3000);
+    this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, CONFIG.timing.idleErrorDelayMs);
   }
 
   destroy() {

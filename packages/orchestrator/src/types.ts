@@ -154,6 +154,19 @@ export interface TaskResultReturnedEvent {
   success: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Team phase
+// ---------------------------------------------------------------------------
+
+export type TeamPhase = "create" | "design" | "execute" | "complete";
+
+export interface TeamPhaseChangedEvent {
+  type: "team:phase";
+  teamId: string;
+  phase: TeamPhase;
+  leadAgentId: string;
+}
+
 export type OrchestratorEvent =
   | TaskStartedEvent
   | TaskDoneEvent
@@ -169,7 +182,8 @@ export type OrchestratorEvent =
   | WorktreeMergedEvent
   | AgentCreatedEvent
   | AgentFiredEvent
-  | TaskResultReturnedEvent;
+  | TaskResultReturnedEvent
+  | TeamPhaseChangedEvent;
 
 // ---------------------------------------------------------------------------
 // Event map for typed EventEmitter
@@ -191,6 +205,7 @@ export interface OrchestratorEventMap {
   "agent:created": [AgentCreatedEvent];
   "agent:fired": [AgentFiredEvent];
   "task:result-returned": [TaskResultReturnedEvent];
+  "team:phase": [TeamPhaseChangedEvent];
 }
 
 // ---------------------------------------------------------------------------

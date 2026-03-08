@@ -1,18 +1,10 @@
 import { nanoid } from "nanoid";
 import path from "path";
+import { CONFIG } from "./config.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { AgentSession } from "./agent-session.js";
 import type { PromptEngine } from "./prompt-templates.js";
 import type { OrchestratorEvent } from "./types.js";
-
-const MAX_DELEGATION_DEPTH = 5;
-const MAX_TOTAL_DELEGATIONS = 20;
-const DELEGATION_BUDGET_ROUNDS = 7;
-const HARD_CEILING_ROUNDS = 10;
-const MAX_REVIEW_ROUNDS = 3;
-// Longer batch window so parallel QA + CodeReview results arrive together in one leader round.
-// If QA finishes but CodeReview is still running, wait up to 20s before flushing partial results.
-const RESULT_BATCH_WINDOW_MS = 20_000;
 
 interface PendingResult {
   fromName: string;
@@ -20,11 +12,21 @@ interface PendingResult {
   summary: string;
 }
 
+/** Per-task delegation metadata — consolidates what was 4 separate Maps/Sets */
+interface TaskMeta {
+  /** Agent that delegated this task */
+  origin: string;
+  /** How many hops from the original user task */
+  depth: number;
+  /** True if this task was created by flushResults (leader processing worker results) */
+  isResultTask?: boolean;
+  /** Snapshot of totalDelegations when this result task started */
+  delegationsAtStart?: number;
+}
+
 export class DelegationRouter {
-  /** taskId → fromAgentId */
-  private delegationOrigin = new Map<string, string>();
-  /** taskId → delegation depth (how many hops from original user task) */
-  private delegationDepth = new Map<string, number>();
+  /** All per-task delegation metadata, keyed by taskId */
+  private tasks = new Map<string, TaskMeta>();
   /** agentId → taskId of the delegated task currently assigned TO this agent */
   private assignedTask = new Map<string, string>();
   /** Total delegations in current team session (reset on clearAll) */
@@ -35,10 +37,6 @@ export class DelegationRouter {
   private reviewCount = 0;
   /** When true, all new delegations and result forwarding are blocked */
   private stopped = false;
-  /** TaskIds created by flushResults — only these can produce a final result */
-  private resultTaskIds = new Set<string>();
-  /** Tracks the totalDelegations count when a resultTask started, so we can detect if new delegations were created */
-  private delegationsAtResultStart = new Map<string, number>();
   /** Batch result forwarding: originAgentId → pending results + timer */
   private pendingResults = new Map<string, { results: PendingResult[]; timer: ReturnType<typeof setTimeout> }>();
   /** Team-wide project directory — all delegations use this as repoPath when set */
@@ -69,7 +67,8 @@ export class DelegationRouter {
    * Check if a taskId was delegated (has an origin).
    */
   isDelegated(taskId: string): boolean {
-    return this.delegationOrigin.has(taskId);
+    const meta = this.tasks.get(taskId);
+    return !!meta && !meta.isResultTask;
   }
 
   /**
@@ -77,7 +76,7 @@ export class DelegationRouter {
    * Only result-processing tasks are eligible to be marked as isFinalResult.
    */
   isResultTask(taskId: string): boolean {
-    return this.resultTaskIds.has(taskId);
+    return this.tasks.get(taskId)?.isResultTask === true;
   }
 
   /**
@@ -85,7 +84,7 @@ export class DelegationRouter {
    * if the current task is not a "resultTask" (safety net for convergence).
    */
   isBudgetExhausted(): boolean {
-    return this.leaderRounds >= DELEGATION_BUDGET_ROUNDS || this.reviewCount >= MAX_REVIEW_ROUNDS;
+    return this.leaderRounds >= CONFIG.delegation.budgetRounds || this.reviewCount >= CONFIG.delegation.maxReviewRounds;
   }
 
   /**
@@ -93,17 +92,17 @@ export class DelegationRouter {
    * This means the leader decided to summarize/finish rather than delegate more work.
    */
   resultTaskDidNotDelegate(taskId: string): boolean {
-    const startCount = this.delegationsAtResultStart.get(taskId);
-    if (startCount === undefined) return false;
-    return this.totalDelegations === startCount;
+    const meta = this.tasks.get(taskId);
+    if (!meta?.isResultTask || meta.delegationsAtStart === undefined) return false;
+    return this.totalDelegations === meta.delegationsAtStart;
   }
 
   /**
    * Check if there are any pending delegated tasks originating from a given agent.
    */
   hasPendingFrom(agentId: string): boolean {
-    for (const origin of this.delegationOrigin.values()) {
-      if (origin === agentId) return true;
+    for (const meta of this.tasks.values()) {
+      if (meta.origin === agentId && !meta.isResultTask) return true;
     }
     return false;
   }
@@ -112,11 +111,16 @@ export class DelegationRouter {
    * Remove all delegation tracking for a specific agent (on fire/cancel).
    */
   clearAgent(agentId: string): void {
-    for (const [taskId, origin] of this.delegationOrigin) {
-      if (origin === agentId) {
-        this.delegationOrigin.delete(taskId);
-        this.delegationDepth.delete(taskId);
+    for (const [taskId, meta] of this.tasks) {
+      if (meta.origin === agentId) {
+        this.tasks.delete(taskId);
       }
+    }
+    this.assignedTask.delete(agentId);
+    const pending = this.pendingResults.get(agentId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingResults.delete(agentId);
     }
   }
 
@@ -147,11 +151,8 @@ export class DelegationRouter {
    * Reset all delegation state (on new team task).
    */
   clearAll(): void {
-    this.delegationOrigin.clear();
-    this.delegationDepth.clear();
+    this.tasks.clear();
     this.assignedTask.clear();
-    this.resultTaskIds.clear();
-    this.delegationsAtResultStart.clear();
     this.totalDelegations = 0;
     this.leaderRounds = 0;
     this.reviewCount = 0;
@@ -175,7 +176,7 @@ export class DelegationRouter {
       }
 
       if (this.isBudgetExhausted()) {
-        console.log(`[Delegation] BLOCKED: budget exhausted (leaderRounds=${this.leaderRounds}/${DELEGATION_BUDGET_ROUNDS}, reviewCount=${this.reviewCount}/${MAX_REVIEW_ROUNDS})`);
+        console.log(`[Delegation] BLOCKED: budget exhausted (leaderRounds=${this.leaderRounds}/${CONFIG.delegation.budgetRounds}, reviewCount=${this.reviewCount}/${CONFIG.delegation.maxReviewRounds})`);
         return;
       }
 
@@ -185,12 +186,12 @@ export class DelegationRouter {
         return;
       }
 
-      if (this.totalDelegations >= MAX_TOTAL_DELEGATIONS) {
-        console.log(`[Delegation] BLOCKED: total delegation limit (${MAX_TOTAL_DELEGATIONS}) reached`);
+      if (this.totalDelegations >= CONFIG.delegation.maxTotal) {
+        console.log(`[Delegation] BLOCKED: total delegation limit (${CONFIG.delegation.maxTotal}) reached`);
         this.emitEvent({
           type: "team:chat",
           fromAgentId,
-          message: `Delegation blocked: total limit of ${MAX_TOTAL_DELEGATIONS} delegations reached. Summarize current results for the user.`,
+          message: `Delegation blocked: total limit of ${CONFIG.delegation.maxTotal} delegations reached. Summarize current results for the user.`,
           messageType: "status",
           timestamp: Date.now(),
         });
@@ -198,11 +199,11 @@ export class DelegationRouter {
       }
 
       const myTaskId = this.assignedTask.get(fromAgentId);
-      const parentDepth = myTaskId ? (this.delegationDepth.get(myTaskId) ?? 0) : 0;
+      const parentDepth = myTaskId ? (this.tasks.get(myTaskId)?.depth ?? 0) : 0;
       const newDepth = parentDepth + 1;
 
-      if (newDepth > MAX_DELEGATION_DEPTH) {
-        console.log(`[Delegation] BLOCKED: depth ${newDepth} exceeds max ${MAX_DELEGATION_DEPTH}`);
+      if (newDepth > CONFIG.delegation.maxDepth) {
+        console.log(`[Delegation] BLOCKED: depth ${newDepth} exceeds max ${CONFIG.delegation.maxDepth}`);
         this.emitEvent({
           type: "team:chat",
           fromAgentId,
@@ -214,8 +215,7 @@ export class DelegationRouter {
       }
 
       const taskId = nanoid();
-      this.delegationOrigin.set(taskId, fromAgentId);
-      this.delegationDepth.set(taskId, newDepth);
+      this.tasks.set(taskId, { origin: fromAgentId, depth: newDepth });
       this.totalDelegations++;
       const fromSession = this.agentManager.get(fromAgentId);
       const fromName = fromSession?.name ?? fromAgentId;
@@ -266,10 +266,10 @@ export class DelegationRouter {
     session.onTaskComplete = (agentId, taskId, summary, success) => {
       if (this.stopped) return;
 
-      const originAgentId = this.delegationOrigin.get(taskId);
-      if (!originAgentId) return;
-      this.delegationOrigin.delete(taskId);
-      this.delegationDepth.delete(taskId);
+      const meta = this.tasks.get(taskId);
+      if (!meta || meta.isResultTask) return; // Result tasks are not forwarded — they're leader-internal
+      const originAgentId = meta.origin;
+      this.tasks.delete(taskId);
       if (this.assignedTask.get(agentId) === taskId) {
         this.assignedTask.delete(agentId);
       }
@@ -332,11 +332,11 @@ export class DelegationRouter {
 
     // Safety net: if a worker is still running after the timeout, flush what we have
     // so the leader isn't blocked forever by a hung worker
-    console.log(`[ResultBatch] ${originAgentId} still has pending delegations, waiting (safety timeout: ${RESULT_BATCH_WINDOW_MS / 1000}s)`);
+    console.log(`[ResultBatch] ${originAgentId} still has pending delegations, waiting (safety timeout: ${CONFIG.timing.resultBatchWindowMs / 1000}s)`);
     pending.timer = setTimeout(() => {
       console.log(`[ResultBatch] Safety timeout reached for ${originAgentId}, flushing ${pending.results.length} partial result(s)`);
       this.flushResults(originAgentId);
-    }, RESULT_BATCH_WINDOW_MS);
+    }, CONFIG.timing.resultBatchWindowMs);
   }
 
   /** Flush all pending results for an origin agent as a single leader prompt. */
@@ -363,8 +363,8 @@ export class DelegationRouter {
     }
 
     // Hard ceiling: force-complete instead of silently returning
-    if (this.leaderRounds > HARD_CEILING_ROUNDS) {
-      console.log(`[ResultBatch] Hard ceiling reached (${HARD_CEILING_ROUNDS} rounds). Force-completing.`);
+    if (this.leaderRounds > CONFIG.delegation.hardCeilingRounds) {
+      console.log(`[ResultBatch] Hard ceiling reached (${CONFIG.delegation.hardCeilingRounds} rounds). Force-completing.`);
 
       const resultLines = pending.results.map(r =>
         `- ${r.fromName} (${r.statusWord}): ${r.summary}`
@@ -373,7 +373,7 @@ export class DelegationRouter {
       this.emitEvent({
         type: "team:chat",
         fromAgentId: originAgentId,
-        message: `Team work auto-completed after ${HARD_CEILING_ROUNDS} rounds.`,
+        message: `Team work auto-completed after ${CONFIG.delegation.hardCeilingRounds} rounds.`,
         messageType: "status",
         timestamp: Date.now(),
       });
@@ -384,7 +384,7 @@ export class DelegationRouter {
         agentId: originAgentId,
         taskId: `auto-complete-${Date.now()}`,
         result: {
-          summary: `Auto-completed after ${HARD_CEILING_ROUNDS} rounds.\n${resultLines}`,
+          summary: `Auto-completed after ${CONFIG.delegation.hardCeilingRounds} rounds.\n${resultLines}`,
           changedFiles: [],
           diffStat: "",
           testResult: "unknown" as const,
@@ -396,16 +396,16 @@ export class DelegationRouter {
 
     // Build round guidance for the leader prompt
     let roundInfo: string;
-    const budgetExhausted = this.leaderRounds >= DELEGATION_BUDGET_ROUNDS;
-    const reviewExhausted = this.reviewCount >= MAX_REVIEW_ROUNDS;
+    const budgetExhausted = this.leaderRounds >= CONFIG.delegation.budgetRounds;
+    const reviewExhausted = this.reviewCount >= CONFIG.delegation.maxReviewRounds;
     if (budgetExhausted || reviewExhausted) {
       roundInfo = reviewExhausted
-        ? `REVIEW LIMIT REACHED (${this.reviewCount}/${MAX_REVIEW_ROUNDS} reviews). No more fix iterations. Output your FINAL SUMMARY now — accept the work as-is.`
-        : `BUDGET REACHED (round ${this.leaderRounds}/${DELEGATION_BUDGET_ROUNDS}). No more delegations allowed. Output your FINAL SUMMARY now.`;
+        ? `REVIEW LIMIT REACHED (${this.reviewCount}/${CONFIG.delegation.maxReviewRounds} reviews). No more fix iterations. Output your FINAL SUMMARY now — accept the work as-is.`
+        : `BUDGET REACHED (round ${this.leaderRounds}/${CONFIG.delegation.budgetRounds}). No more delegations allowed. Output your FINAL SUMMARY now.`;
     } else if (this.reviewCount > 0) {
-      roundInfo = `Round ${this.leaderRounds}/${DELEGATION_BUDGET_ROUNDS} | Review ${this.reviewCount}/${MAX_REVIEW_ROUNDS} (fix iteration ${this.reviewCount})`;
+      roundInfo = `Round ${this.leaderRounds}/${CONFIG.delegation.budgetRounds} | Review ${this.reviewCount}/${CONFIG.delegation.maxReviewRounds} (fix iteration ${this.reviewCount})`;
     } else {
-      roundInfo = `Round ${this.leaderRounds}/${DELEGATION_BUDGET_ROUNDS} | No reviews yet`;
+      roundInfo = `Round ${this.leaderRounds}/${CONFIG.delegation.budgetRounds} | No reviews yet`;
     }
 
     const resultLines = pending.results.map(r =>
@@ -413,8 +413,12 @@ export class DelegationRouter {
     ).join("\n\n");
 
     const followUpTaskId = nanoid();
-    this.resultTaskIds.add(followUpTaskId);
-    this.delegationsAtResultStart.set(followUpTaskId, this.totalDelegations);
+    this.tasks.set(followUpTaskId, {
+      origin: originAgentId,
+      depth: 0,
+      isResultTask: true,
+      delegationsAtStart: this.totalDelegations,
+    });
     const teamContext = this.agentManager.isTeamLead(originAgentId)
       ? this.agentManager.getTeamRoster()
       : undefined;
@@ -431,7 +435,7 @@ export class DelegationRouter {
       roundInfo,
     });
 
-    console.log(`[ResultBatch] Flushing ${pending.results.length} result(s) to ${originAgentId} (round ${this.leaderRounds}, budget=${DELEGATION_BUDGET_ROUNDS}, ceiling=${HARD_CEILING_ROUNDS})`);
+    console.log(`[ResultBatch] Flushing ${pending.results.length} result(s) to ${originAgentId} (round ${this.leaderRounds}, budget=${CONFIG.delegation.budgetRounds}, ceiling=${CONFIG.delegation.hardCeilingRounds})`);
     originSession.runTask(followUpTaskId, batchPrompt, undefined, teamContext);
   }
 }
