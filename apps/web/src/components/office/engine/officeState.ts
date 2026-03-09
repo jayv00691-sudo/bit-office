@@ -185,7 +185,7 @@ export class OfficeState {
     ch.bubbleType = null
   }
 
-  updateCharacterStatus(agentId: string, status: AgentStatus): void {
+  updateCharacterStatus(agentId: string, status: AgentStatus, keepSeat?: boolean): void {
     const charId = this.agentIdToCharId.get(agentId)
     if (charId === undefined) return
     const ch = this.characters.get(charId)
@@ -196,16 +196,39 @@ export class OfficeState {
 
     ch.isActive = isNowActive
 
-    if (!isNowActive && wasActive) {
-      // Just became inactive — release work seat so others can use it
-      if (ch.seatId) {
-        const seat = this.seats.get(ch.seatId)
-        if (seat) seat.assigned = false
-        ch.seatId = null
+    // Team members always need a seat — assign one if they don't have one yet,
+    // regardless of current status. This avoids a race condition where the bridge
+    // misses a brief "working" transition (leader finishes delegation in seconds).
+    if (keepSeat && !ch.seatId) {
+      if (ch.restSeatId) {
+        const rs = this.seats.get(ch.restSeatId)
+        if (rs) rs.assigned = false
+        ch.restSeatId = null
+        ch.seatTimer = 0
       }
-      ch.seatTimer = -1
-      ch.path = []
-      ch.moveProgress = 0
+      const seatId = this.findFreeSeat()
+      if (seatId) {
+        const seat = this.seats.get(seatId)!
+        seat.assigned = true
+        ch.seatId = seatId
+      }
+      this.rebuildFurnitureInstances()
+    }
+
+    if (!isNowActive && wasActive) {
+      if (keepSeat) {
+        // Team member: keep their seat between tasks
+      } else {
+        // Solo agent: release work seat so others can use it
+        if (ch.seatId) {
+          const seat = this.seats.get(ch.seatId)
+          if (seat) seat.assigned = false
+          ch.seatId = null
+        }
+        ch.seatTimer = -1
+        ch.path = []
+        ch.moveProgress = 0
+      }
       this.rebuildFurnitureInstances()
     } else if (isNowActive && !wasActive) {
       // Just became active — find a free work seat

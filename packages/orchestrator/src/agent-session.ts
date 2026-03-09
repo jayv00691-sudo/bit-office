@@ -431,8 +431,15 @@ export class AgentSession {
       });
 
       this.process.on("close", (code) => {
+        const agentPid = this.process?.pid;
         this.process = null;
         if (this.taskTimeout) { clearTimeout(this.taskTimeout); this.taskTimeout = null; }
+
+        // Kill the agent's process group to clean up any orphan child processes
+        // (e.g., dev servers the agent may have started despite prompt instructions)
+        if (agentPid) {
+          try { process.kill(-agentPid, "SIGTERM"); } catch { /* group already dead */ }
+        }
 
         // Flush any remaining data in the JSON line buffer (last line without trailing newline)
         const remaining = jsonLineBuf.trim();

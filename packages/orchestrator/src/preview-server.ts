@@ -3,12 +3,16 @@ import { existsSync } from "fs";
 import path from "path";
 
 const STATIC_PORT = 9100;
+const COMMAND_PORT = 9101;
 
 /**
  * Global preview server — one at a time.
  * Supports two modes:
  *   1. Static file serving (npx serve) for HTML/CSS/JS and framework build output
  *   2. Command execution (python app.py, node server.js) for dynamic apps
+ *
+ * Port allocation is fully controlled by this server — agent-specified ports
+ * are always overridden to prevent conflicts with the host system.
  */
 class PreviewServer {
   private process: ChildProcess | null = null;
@@ -47,12 +51,23 @@ class PreviewServer {
   }
 
   /**
-   * Mode 2: Run a command (e.g. "python app.py") and use the specified port.
-   * The command is expected to start a server on the given port.
+   * Mode 2: Run a command (e.g. "python app.py") and use a controlled port.
+   * The agent-specified port is ALWAYS replaced with COMMAND_PORT to prevent
+   * conflicts with the host system (e.g. Next.js on 3000).
    * Returns the preview URL.
    */
-  runCommand(cmd: string, cwd: string, port: number): string | undefined {
+  runCommand(cmd: string, cwd: string, agentPort: number): string | undefined {
     this.stop();
+
+    // Always override the agent's port with our controlled port
+    const port = COMMAND_PORT;
+    if (agentPort !== port) {
+      cmd = cmd.replace(String(agentPort), String(port));
+      console.log(`[PreviewServer] Remapped port ${agentPort} → ${port}`);
+    }
+
+    // Kill anything already on our port before starting
+    this.killPortHolder(port);
 
     try {
       this.process = spawn(cmd, {
@@ -102,7 +117,7 @@ class PreviewServer {
     }
   }
 
-  /** Kill the current process and any orphan process on the static port */
+  /** Kill the current process and any orphan process on managed ports */
   stop() {
     if (this.process) {
       try {
@@ -119,8 +134,9 @@ class PreviewServer {
       this.isDetached = false;
       console.log(`[PreviewServer] Stopped`);
     }
-    // Kill any orphan process still holding the static port (e.g. from a previous gateway run)
+    // Kill any orphan process still holding managed ports
     this.killPortHolder(STATIC_PORT);
+    this.killPortHolder(COMMAND_PORT);
   }
 
   /** Kill whatever process is listening on the given port (best-effort). */

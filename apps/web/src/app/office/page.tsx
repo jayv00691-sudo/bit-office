@@ -242,6 +242,20 @@ function ConfettiOverlay() {
   );
 }
 
+/** Compute expected preview URL from result metadata (no server started yet) */
+function computePreviewUrl(result: { previewUrl?: string; previewCmd?: string; previewPort?: number; previewPath?: string; entryFile?: string }): string | undefined {
+  if (result.previewUrl) return result.previewUrl;
+  if (result.previewCmd && result.previewPort) return "http://localhost:9101";
+  if (result.previewPath) return `http://localhost:9100/${result.previewPath.split("/").pop()}`;
+  if (result.entryFile && /\.html?$/i.test(result.entryFile)) return `http://localhost:9100/${result.entryFile.split("/").pop()}`;
+  return undefined;
+}
+
+/** Whether result has a web-previewable output */
+function hasWebPreview(result: { previewUrl?: string; previewCmd?: string; previewPort?: number; previewPath?: string; entryFile?: string }): boolean {
+  return !!(result.previewUrl || (result.previewCmd && result.previewPort) || result.previewPath || (result.entryFile && /\.html?$/i.test(result.entryFile)));
+}
+
 /** Build a SERVE_PREVIEW command from result fields */
 function buildPreviewCommand(result: { previewPath?: string; previewCmd?: string; previewPort?: number; projectDir?: string; entryFile?: string }) {
   if (result.previewCmd && result.previewPort) {
@@ -249,6 +263,10 @@ function buildPreviewCommand(result: { previewPath?: string; previewCmd?: string
   }
   if (result.previewPath) {
     return { type: "SERVE_PREVIEW" as const, filePath: result.previewPath };
+  }
+  // HTML entryFile with projectDir — serve the file statically
+  if (result.entryFile && /\.html?$/i.test(result.entryFile) && result.projectDir) {
+    return { type: "SERVE_PREVIEW" as const, filePath: result.projectDir + "/" + result.entryFile };
   }
   // Desktop/CLI app: PREVIEW_CMD without port, or non-HTML entry file
   if (result.previewCmd) {
@@ -270,8 +288,9 @@ function CelebrationModal({ previewUrl, previewPath, onPreview, onDismiss, previ
   onPreview: (url: string) => void;
   onDismiss: () => void;
 }) {
-  // Desktop/CLI app: has a launch command but no browser preview URL
-  const canLaunch = !previewUrl && buildPreviewCommand({ previewPath, previewCmd, previewPort, projectDir, entryFile });
+  const resultInfo = { previewUrl, previewCmd, previewPort, previewPath, entryFile };
+  const canPreview = hasWebPreview(resultInfo);
+  const canLaunch = !canPreview && buildPreviewCommand({ previewPath, previewCmd, previewPort, projectDir, entryFile });
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 9999,
@@ -293,12 +312,13 @@ function CelebrationModal({ previewUrl, previewPath, onPreview, onDismiss, previ
           Your task has been completed successfully. Ready for the next mission whenever you are.
         </div>
         <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-          {previewUrl && (
+          {canPreview && (
             <button
               onClick={() => {
                 const cmd = buildPreviewCommand({ previewPath, previewCmd, previewPort, projectDir, entryFile });
                 if (cmd) sendCommand(cmd);
-                onPreview(previewUrl);
+                const url = computePreviewUrl(resultInfo);
+                if (url) onPreview(url);
               }}
               style={{
                 padding: "9px 20px", border: "1px solid #48cc6a",
@@ -662,8 +682,8 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
             </div>
           )}
 
-          {/* Preview button — for web projects (has previewUrl) */}
-          {r.previewUrl && onPreview && (
+          {/* Preview button — for web projects (has URL, cmd+port, or static path) */}
+          {hasWebPreview(r) && onPreview && (
             <div style={{
               padding: "10px 14px",
               borderTop: "1px solid #48cc6a20",
@@ -672,7 +692,8 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
                 onClick={() => {
                   const cmd = buildPreviewCommand(r);
                   if (cmd) sendCommand(cmd);
-                  onPreview(r.previewUrl!);
+                  const url = computePreviewUrl(r);
+                  if (url) onPreview(url);
                 }}
                 style={{
                   width: "100%", padding: "10px 16px",
@@ -685,8 +706,8 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
               </button>
             </div>
           )}
-          {/* Launch button — for desktop/CLI apps (no previewUrl but has a runnable command) */}
-          {!r.previewUrl && buildPreviewCommand(r) && (
+          {/* Launch button — for desktop/CLI apps (no web preview but has a runnable command) */}
+          {!hasWebPreview(r) && buildPreviewCommand(r) && (
             <div style={{
               padding: "10px 14px",
               borderTop: "1px solid #48cc6a20",
@@ -781,14 +802,16 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
           </div>
         )}
         {/* Preview: for solo agents (non-team-lead), show based on result data */}
-        {msg.result?.previewUrl && onPreview
+        {msg.result && hasWebPreview(msg.result) && onPreview
           && !isTeamMember && !isTeamLead
         && (
           <button
             onClick={() => {
-              const cmd = buildPreviewCommand(msg.result!);
+              const r = msg.result!;
+              const cmd = buildPreviewCommand(r);
               if (cmd) sendCommand(cmd);
-              onPreview(msg.result!.previewUrl!);
+              const url = computePreviewUrl(r);
+              if (url) setTimeout(() => onPreview(url), r.previewUrl ? 0 : 1500);
             }}
             style={{
               marginTop: 8, padding: "5px 12px",
@@ -1908,7 +1931,7 @@ export default function OfficePage() {
         seenCelebrationIdsRef.current.add(msg.id);
         // Only celebrate when actual work was done (code changes, tests, or preview)
         const r = msg.result;
-        if (r.changedFiles.length === 0 && r.testResult === "unknown" && !r.previewUrl) continue;
+        if (r.changedFiles.length === 0 && r.testResult === "unknown" && !r.previewUrl && !r.previewCmd && !r.previewPath) continue;
         // Team member → never celebrate
         if (agentState.teamId && !agentState.isTeamLead) continue;
         // Team leader → only celebrate when isFinalResult is explicitly true

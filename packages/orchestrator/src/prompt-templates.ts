@@ -118,7 +118,7 @@ Check WHO sent this result, then follow the matching branch:
 
 ENTRY_FILE: <from dev — e.g. index.html, dist/index.html. OMIT if dev didn't provide one>
 PREVIEW_CMD: <from dev — e.g. "python app.py". OMIT if dev didn't provide one. NEVER use "npm run dev" or "npm start"!>
-PREVIEW_PORT: <from dev — e.g. 5000, 3000. OMIT if dev didn't provide one>
+PREVIEW_PORT: <from dev — e.g. 5000. OMIT if dev didn't provide one>
 SUMMARY: <2-3 sentence description of what was built>
 
 RULES:
@@ -136,8 +136,9 @@ CONVERGENCE RULES (follow strictly):
 - If you are uncertain between two approaches, choose the simpler one and note it in SUMMARY.
 - Do NOT add features, error handling, or improvements that were not explicitly asked for.
 
-HARD LIMITS:
-- NEVER run "npm run dev", "npm start", "npx vite", "python -m http.server", or ANY command that starts a long-running server. These will hang forever and waste your budget. The system handles preview serving automatically.
+HARD LIMITS (violating these will terminate your process immediately):
+- NEVER run "npm run dev", "npm start", "npx vite", "python -m http.server", "live-server", or ANY command that starts a long-running server or opens a port. These commands NEVER EXIT — your session will hang forever, waste your entire budget, and you will be killed by timeout. The system handles preview serving automatically after you report PREVIEW_CMD.
+- Do NOT "test" or "verify" by launching the app in a browser or server. You CANNOT see the UI. Verify by: reading code, checking file existence, running builds, and syntax checks ONLY.
 - Do NOT create backend servers, WebSocket servers, or any server-side code UNLESS the task explicitly requires one. Default to static HTML/CSS/JS.
 - You MAY install dependencies (npm install, pip install) and run ONE-SHOT build commands (npm run build, npx tsc). Never run watch/serve/dev commands.
 {{soloHint}}
@@ -196,14 +197,16 @@ CONVERGENCE RULES (follow strictly):
 - If you are uncertain between two approaches, choose the simpler one and note it in SUMMARY.
 - Do NOT add features, error handling, or improvements that were not explicitly asked for.
 
-HARD LIMITS:
-- NEVER run "npm run dev", "npm start", "npx vite", or ANY long-running server command. These hang forever. Only use one-shot commands like "npm run build" or "node --check".
-- Do NOT launch GUI/desktop applications (Pygame, Tkinter, Electron, etc.) to test them — they open windows that cannot be controlled. Use syntax checks, import checks, and code reading only.
+HARD LIMITS (violating these will terminate your process immediately):
+- NEVER run "npm run dev", "npm start", "npx vite", "python -m http.server", "live-server", or ANY command that starts a long-running server or opens a port. These commands NEVER EXIT — your session will hang and you will be killed.
+- Do NOT launch GUI/desktop applications (Pygame, Tkinter, Electron, etc.) to test them — they open windows that cannot be controlled.
+- Do NOT "test" the app by running it, opening it in a browser, or starting a server. You CANNOT see the UI or interact with it. Your job is CODE REVIEW, not runtime testing.
+- ONLY use: code reading, "ls" to check files exist, "npm run build" (one-shot), syntax checks (node --check, python -c "import ast; ..."). Nothing else.
 
 Code Quality (must check):
 - Correctness: crashes, broken logic, missing files, syntax errors.
 - Verify the deliverable can actually run: check that entry point exists, dependencies are declared, build output is present. For GUI/desktop apps, verify via code review and syntax checks — do NOT run them.
-- VERIFY WITH TOOLS, not just the developer's summary. Run "ls" to confirm reported files exist. If ENTRY_FILE is claimed, check the file is there and references valid scripts/styles. Do not trust STATUS: done at face value.
+- VERIFY WITH FILE CHECKS, not just the developer's summary. Run "ls" to confirm reported files exist. If ENTRY_FILE is claimed, check the file is there and references valid scripts/styles. Read the code to verify logic. Do not trust STATUS: done at face value.
 - Do NOT flag security issues in prototypes — this is a demo, not production code.
 
 Feature Completeness (must check):

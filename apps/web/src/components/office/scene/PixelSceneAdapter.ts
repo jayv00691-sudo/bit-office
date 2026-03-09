@@ -24,8 +24,8 @@ export class PixelSceneAdapter implements SceneAdapter {
     this.officeState.removeCharacter(agentId);
   }
 
-  updateAgent(agentId: string, status: AgentStatus, bubble: BubbleType | null): void {
-    this.officeState.updateCharacterStatus(agentId, status);
+  updateAgent(agentId: string, status: AgentStatus, bubble: BubbleType | null, keepSeat?: boolean): void {
+    this.officeState.updateCharacterStatus(agentId, status, keepSeat);
     if (bubble) {
       this.officeState.showBubble(agentId, bubble);
     } else {

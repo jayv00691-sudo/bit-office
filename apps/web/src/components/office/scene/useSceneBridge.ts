@@ -60,7 +60,7 @@ export function useSceneBridge(
         isExternal: !!agent.isExternal,
         palette: agent.palette,
       });
-      adapter.updateAgent(agentId, agent.status, deriveBubble(agent));
+      adapter.updateAgent(agentId, agent.status, deriveBubble(agent), !!agent.teamId);
       knownAgentsRef.current.add(agentId);
       prevMsgCountRef.current.set(agentId, agent.messages.length);
       prevLogLineRef.current.set(agentId, agent.lastLogLine ?? null);
@@ -95,7 +95,8 @@ export function useSceneBridge(
           knownAgentsRef.current.add(agentId);
         }
 
-        adapter.updateAgent(agentId, agent.status, deriveBubble(agent));
+        // Team members keep their seat when inactive (done/idle), solo agents release it
+        adapter.updateAgent(agentId, agent.status, deriveBubble(agent), !!agent.teamId);
 
         // Detect new agent messages -> speech bubble
         const prevCount = prevMsgCountRef.current.get(agentId) ?? 0;

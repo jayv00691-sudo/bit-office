@@ -22,7 +22,7 @@ export type BubbleType = "permission" | "working" | "waiting";
 export interface SceneAdapter {
   addAgent(agentId: string, info: AgentInfo): void;
   removeAgent(agentId: string): void;
-  updateAgent(agentId: string, status: AgentStatus, bubble: BubbleType | null): void;
+  updateAgent(agentId: string, status: AgentStatus, bubble: BubbleType | null, keepSeat?: boolean): void;
   showSpeechBubble(agentId: string, text: string): void;
   selectAgent(agentId: string | null): void;
   dispose(): void;
