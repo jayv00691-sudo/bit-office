@@ -74,6 +74,7 @@ export interface ProjectSummary {
     previewCmd?: string;
     previewPort?: number;
   };
+  tokenUsage?: { inputTokens: number; outputTokens: number };
 }
 
 interface OfficeStore {

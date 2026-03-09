@@ -85,6 +85,11 @@ export interface ProjectPreview {
   previewPort?: number;
 }
 
+export interface TokenUsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface ProjectArchive {
   id: string;
   name: string;
@@ -94,6 +99,7 @@ export interface ProjectArchive {
   team: PersistedTeam | null;
   events: GatewayEvent[];
   preview?: ProjectPreview;
+  tokenUsage?: TokenUsageSummary;
 }
 
 export interface ProjectSummary {
@@ -104,6 +110,7 @@ export interface ProjectSummary {
   agentNames: string[];
   eventCount: number;
   preview?: ProjectPreview;
+  tokenUsage?: TokenUsageSummary;
 }
 
 /** In-memory event buffer for the current project */
@@ -212,6 +219,20 @@ export function archiveProject(agents: PersistedAgent[], team: PersistedTeam | n
     }
   }
 
+  // Aggregate token usage from all TASK_DONE events
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  for (const e of projectEvents) {
+    if (e.type === "TASK_DONE" && e.result?.tokenUsage) {
+      totalInputTokens += e.result.tokenUsage.inputTokens ?? 0;
+      totalOutputTokens += e.result.tokenUsage.outputTokens ?? 0;
+    }
+  }
+  const tokenUsage: TokenUsageSummary | undefined =
+    (totalInputTokens > 0 || totalOutputTokens > 0)
+      ? { inputTokens: totalInputTokens, outputTokens: totalOutputTokens }
+      : undefined;
+
   const id = `${projectStartedAt}-${projectName || "project"}`;
   const archive: ProjectArchive = {
     id,
@@ -222,6 +243,7 @@ export function archiveProject(agents: PersistedAgent[], team: PersistedTeam | n
     team,
     events: projectEvents,
     preview,
+    tokenUsage,
   };
 
   try {
@@ -253,6 +275,7 @@ export function listProjects(): ProjectSummary[] {
           agentNames: raw.agents.map(a => a.name),
           eventCount: raw.events.length,
           preview: raw.preview,
+          tokenUsage: raw.tokenUsage,
         });
       } catch { /* skip corrupt files */ }
     }

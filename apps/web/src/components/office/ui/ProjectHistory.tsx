@@ -4,6 +4,12 @@ import { useOfficeStore, type ProjectSummary } from "@/store/office-store";
 import { sendCommand } from "@/lib/connection";
 import type { GatewayEvent } from "@office/shared";
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
 function formatDate(ts: number) {
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -325,6 +331,16 @@ export default function ProjectHistory({ isOpen, onClose, onPreview }: {
                           }}>
                             {p.agentNames.length} agent{p.agentNames.length !== 1 ? "s" : ""}
                           </span>
+                          {p.tokenUsage && (p.tokenUsage.inputTokens > 0 || p.tokenUsage.outputTokens > 0) && (
+                            <span style={{
+                              fontSize: 10, fontFamily: "monospace",
+                              color: "#48cc6a", opacity: 0.6,
+                            }}
+                              title={`Input: ${p.tokenUsage.inputTokens.toLocaleString()} / Output: ${p.tokenUsage.outputTokens.toLocaleString()}`}
+                            >
+                              {"\u2191"}{formatTokens(p.tokenUsage.inputTokens)} {"\u2193"}{formatTokens(p.tokenUsage.outputTokens)}
+                            </span>
+                          )}
                         </div>
                         {/* Agent names */}
                         <div style={{

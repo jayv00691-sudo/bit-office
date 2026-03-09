@@ -182,6 +182,7 @@ export const ProjectListEvent = z.object({
     agentNames: z.array(z.string()),
     eventCount: z.number(),
     preview: ProjectPreviewSchema,
+    tokenUsage: z.object({ inputTokens: z.number(), outputTokens: z.number() }).optional(),
   })),
 });
 
