@@ -2,15 +2,15 @@
 
 Gameified command center for AI coding agents.
 
-Bit Office turns invisible AI automation into a live, controllable workspace: you can run multiple AI CLIs, watch execution in a pixel office, approve risky actions, and inspect results from desktop or phone.
+Bit Office turns invisible AI automation into a live, controllable workspace: different AI models collaborate as one team under a Team Leader, so complex software tasks can be planned, executed, reviewed, and delivered in one flow.
 
 <video src="https://github.com/user-attachments/assets/a13ac1a0-8440-49f1-ab1e-110a35847d0c" controls width="100%"></video>
 
 ## Why It Stands Out
 
-- Visual operations for AI coding: see status, logs, and approvals in one place
-- Multi-model runtime: connect different agent CLIs in the same project
-- Human-in-the-loop safety: approval gates for risky commands
+- Visual operations for AI coding: see status and logs in one place
+- Leader-guided team execution: Team Leader coordinates specialists to ship complex tasks
+- Multi-model collaboration: combine Claude, Codex, Gemini, Aider, and more in one workflow
 - Ship-first feedback loop: auto preview generation for completed tasks
 - 12 office visual styles: switch workspace themes to match your project mood
 - Built-in project history: every completed run is saved with replayable preview
