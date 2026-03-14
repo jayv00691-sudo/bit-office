@@ -423,6 +423,9 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
         }
         case "TASK_STARTED": {
           const agent = agents.get(event.agentId) ?? defaultAgent(event.agentId);
+          // Add a streaming placeholder message that LOG_APPEND will update in-place
+          const streamId = event.taskId + "-stream";
+          const hasStream = agent.messages.some((m) => m.id === streamId);
           agents.set(event.agentId, {
             ...agent,
             status: "working",
@@ -430,6 +433,12 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
             currentPrompt: event.prompt,
             pendingApproval: null,
             lastLogLine: null,
+            messages: hasStream ? agent.messages : [...agent.messages, {
+              id: streamId,
+              role: "agent" as const,
+              text: "",
+              timestamp: Date.now(),
+            }],
           });
           break;
         }
@@ -496,8 +505,11 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
             break;
           }
 
+          // Replace streaming message with final result, or append if no stream
+          const streamId = event.taskId + "-stream";
+          const filteredMessages = agent.messages.filter((m) => m.id !== streamId);
           const newMessages: ChatMessage[] = [
-            ...agent.messages,
+            ...filteredMessages,
             {
               id: replyId,
               role: "agent",
@@ -581,34 +593,44 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
         }
         case "LOG_APPEND": {
           const agent = agents.get(event.agentId);
-          if (agent) {
-            agents.set(event.agentId, { ...agent, lastLogLine: event.chunk });
+          if (!agent || !event.chunk) break;
+          agents.set(event.agentId, { ...agent, lastLogLine: event.chunk });
 
-            // For external agents, also append as read-only chat messages
-            if (agent.isExternal && event.chunk) {
-              const now = Date.now();
-              const lastMsg = agent.messages.length > 0 ? agent.messages[agent.messages.length - 1] : null;
-              // Throttle: update last agent message if within 3 seconds
-              if (lastMsg && lastMsg.role === "agent" && (now - lastMsg.timestamp) < 3000) {
-                const updatedMessages = [...agent.messages];
-                updatedMessages[updatedMessages.length - 1] = {
-                  ...lastMsg,
-                  text: event.chunk,
-                  timestamp: now,
-                };
-                agents.set(event.agentId, { ...agents.get(event.agentId)!, messages: updatedMessages });
-              } else {
-                const msgId = `ext-log-${now}`;
-                agents.set(event.agentId, {
-                  ...agents.get(event.agentId)!,
-                  messages: [...agents.get(event.agentId)!.messages, {
-                    id: msgId,
-                    role: "agent",
-                    text: event.chunk,
-                    timestamp: now,
-                  }],
-                });
-              }
+          // Update the streaming message — append new lines to build up output
+          const streamId = agent.currentTaskId ? agent.currentTaskId + "-stream" : null;
+          const lastMsg = agent.messages.length > 0 ? agent.messages[agent.messages.length - 1] : null;
+          if (streamId && lastMsg?.id === streamId) {
+            // Append chunk, deduplicating overlap with previous text
+            const prev = lastMsg.text;
+            const chunk = event.chunk;
+            let newText: string;
+            if (!prev) {
+              newText = chunk;
+            } else {
+              // Find if chunk overlaps with end of prev (agent sends last 3 lines which may repeat)
+              const lines = chunk.split("\n");
+              const newLines = lines.filter((l: string) => l && !prev.endsWith(l));
+              newText = newLines.length > 0 ? prev + "\n" + newLines.join("\n") : prev;
+            }
+            const updatedMessages = [...agent.messages];
+            updatedMessages[updatedMessages.length - 1] = {
+              ...lastMsg,
+              text: newText,
+              timestamp: Date.now(),
+            };
+            agents.set(event.agentId, { ...agents.get(event.agentId)!, messages: updatedMessages });
+          } else if (agent.isExternal) {
+            // External agents: append as separate messages (no stream id)
+            const now = Date.now();
+            if (lastMsg && lastMsg.role === "agent" && (now - lastMsg.timestamp) < 3000) {
+              const updatedMessages = [...agent.messages];
+              updatedMessages[updatedMessages.length - 1] = { ...lastMsg, text: event.chunk, timestamp: now };
+              agents.set(event.agentId, { ...agents.get(event.agentId)!, messages: updatedMessages });
+            } else {
+              agents.set(event.agentId, {
+                ...agents.get(event.agentId)!,
+                messages: [...agents.get(event.agentId)!.messages, { id: `ext-log-${now}`, role: "agent", text: event.chunk, timestamp: now }],
+              });
             }
           }
           break;

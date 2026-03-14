@@ -91,6 +91,42 @@ function linkifyText(children: React.ReactNode): React.ReactNode {
   return children;
 }
 
+/** Typewriter reveal — adaptive speed: slow for small chunks, faster for large backlogs. */
+function TypewriterText({ text }: { text: string }) {
+  const [revealed, setRevealed] = useState(0);
+  const targetRef = useRef(text.length);
+  const rafRef = useRef<number>(0);
+  const lastTimeRef = useRef(0);
+
+  useEffect(() => {
+    targetRef.current = text.length;
+    if (rafRef.current) return; // already animating
+    const step = (time: number) => {
+      if (!lastTimeRef.current) lastTimeRef.current = time;
+      const dt = time - lastTimeRef.current;
+      if (dt >= 25) { // ~40fps cap to avoid too-fast updates
+        lastTimeRef.current = time;
+        setRevealed((prev) => {
+          const remaining = targetRef.current - prev;
+          if (remaining <= 0) { rafRef.current = 0; return prev; }
+          // Adaptive: 1 char when <20 behind, ramp up for larger backlogs
+          const speed = remaining < 20 ? 1 : remaining < 80 ? 2 : Math.ceil(remaining * 0.08);
+          return Math.min(prev + speed, targetRef.current);
+        });
+      }
+      if (rafRef.current) rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+    return () => { if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; } };
+  }, [text]);
+
+  useEffect(() => {
+    if (text.length < revealed) { setRevealed(0); lastTimeRef.current = 0; }
+  }, [text.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return <>{text.slice(0, revealed)}</>;
+}
+
 function ThinkingBubble({ logLine }: { logLine: string | null }) {
   return (
     <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 8 }}>
@@ -689,17 +725,24 @@ function MdContent({ text }: { text: string }) {
   );
 }
 
+const TERM_FONT = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace";
+const TERM_SIZE = 12;
+const TERM_GREEN = "#18ff62";
+const TERM_DIM = "#3a5a3a";
+const TERM_TEXT = "#7a9a7a";
+const TERM_GLOW = `0 0 8px rgba(24,255,98,0.25)`;
+
 function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: { msg: ChatMessage; onPreview?: (url: string) => void; isTeamLead?: boolean; isTeamMember?: boolean; teamPhase?: string | null }) {
   const ts = new Date(msg.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const T = "font-size:11px;font-family:'SF Mono',Menlo,Consolas,monospace;font-weight:400;line-height:1.45;";
+  const base: React.CSSProperties = { marginBottom: 1, fontSize: TERM_SIZE, fontFamily: TERM_FONT, fontWeight: 400, lineHeight: 1.4 };
 
   // ── User input ──
   if (msg.role === "user") {
     return (
-      <div style={{ marginBottom: 2, fontSize: 11, fontFamily: "'SF Mono',Menlo,Consolas,monospace", fontWeight: 400, lineHeight: 1.45 }}>
-        <span style={{ color: "#444" }}>{ts}</span>
-        <span style={{ color: "#18ff62", marginLeft: 6 }}>&gt;</span>
-        <span style={{ color: "#b0b0a0", marginLeft: 5, wordBreak: "break-word" }}>{linkifyText(msg.text)}</span>
+      <div className="term-msg" style={base}>
+        <span style={{ color: TERM_DIM }}>{ts} </span>
+        <span style={{ color: TERM_GREEN, textShadow: TERM_GLOW }}>&gt; </span>
+        <span style={{ color: "#b8d0b0", wordBreak: "break-word" }}>{linkifyText(msg.text)}</span>
       </div>
     );
   }
@@ -710,22 +753,44 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
     const isResult = msg.text.startsWith("Result from ");
     const isQueued = msg.text.startsWith("Task queued ");
     const tag = isDelegation ? "delegate" : isResult ? "result" : isQueued ? "queued" : "sys";
-
     return (
-      <div style={{ marginBottom: 2, fontSize: 11, fontFamily: "'SF Mono',Menlo,Consolas,monospace", fontWeight: 400, lineHeight: 1.45 }}>
-        <span style={{ color: "#444" }}>{ts}</span>
-        <span style={{ color: "#18ff62", marginLeft: 6, opacity: 0.6 }}>[{tag}]</span>
-        <span style={{ color: "#666", marginLeft: 5, wordBreak: "break-word" }} className="chat-markdown"><MdContent text={msg.text} /></span>
+      <div className="term-msg" style={base}>
+        <span style={{ color: TERM_DIM }}>{ts} </span>
+        <span style={{ color: TERM_GREEN, opacity: 0.4 }}>[{tag}] </span>
+        <span style={{ color: "#556655", wordBreak: "break-word" }} className="chat-markdown"><MdContent text={msg.text} /></span>
       </div>
     );
   }
 
   // ── Agent ──
+  const isStreaming = msg.id.endsWith("-stream");
   const hasFullOutput = !!(msg.result?.fullOutput && msg.result.fullOutput !== msg.text && msg.result.fullOutput.length > msg.text.length + 20);
   const planMatch = msg.text.match(/\[PLAN\]([\s\S]*?)\[\/PLAN\]/i);
   const planContent = planMatch?.[1]?.trim();
   const textWithoutPlan = planContent ? msg.text.replace(/\[PLAN\][\s\S]*?\[\/PLAN\]/i, "").trim() : null;
   const displayText = hasFullOutput ? (msg.result?.fullOutput ?? msg.text) : msg.text;
+
+  // Streaming message — raw typewriter output
+  if (isStreaming) {
+    if (!msg.text) {
+      return (
+        <div style={base}>
+          <span style={{ color: TERM_DIM }}>{ts} </span>
+          <span style={{ color: TERM_GREEN, opacity: 0.4 }}>[agent] </span>
+          <span style={{ color: TERM_DIM }}>...</span>
+        </div>
+      );
+    }
+    return (
+      <div style={base}>
+        <span style={{ color: TERM_DIM }}>{ts} </span>
+        <span style={{ color: TERM_GREEN, opacity: 0.4 }}>[agent] </span>
+        <span style={{ color: TERM_TEXT, wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
+          <TypewriterText text={msg.text} />
+        </span>
+      </div>
+    );
+  }
 
   // Completion
   if (isTeamLead && msg.isFinalResult && msg.result) {
@@ -735,42 +800,42 @@ function MessageBubble({ msg, onPreview, isTeamLead, isTeamMember, teamPhase }: 
     const projectDir = r.projectDir ?? r.summary.match(/PROJECT_DIR:\s*(.+)/i)?.[1]?.trim();
     const changedFiles = r.changedFiles ?? [];
     return (
-      <div style={{ marginBottom: 3, fontSize: 11, fontFamily: "'SF Mono',Menlo,Consolas,monospace", fontWeight: 400, lineHeight: 1.45 }}>
-        <span style={{ color: "#444" }}>{ts}</span>
-        <span style={{ color: "#18ff62", marginLeft: 6 }}>[done]</span>
-        <div style={{ marginLeft: 14, marginTop: 1, color: "#8a8a7a", wordBreak: "break-word" }} className="chat-markdown"><MdContent text={cleanSummary || "completed."} /></div>
-        {(projectDir || entryFile) && <div style={{ marginLeft: 14, color: "#555", fontSize: 10 }}>
-          {projectDir && <span>dir:{projectDir} </span>}
-          {entryFile && <span style={{ cursor: "pointer", textDecoration: "underline", color: "#18ff62" }} onClick={() => sendCommand({ type: "OPEN_FILE", path: entryFile })}>entry:{entryFile}</span>}
+      <div className="term-msg" style={base}>
+        <span style={{ color: TERM_DIM }}>{ts} </span>
+        <span style={{ color: TERM_GREEN, textShadow: TERM_GLOW }}>[done] </span>
+        <span style={{ color: TERM_TEXT, wordBreak: "break-word" }} className="chat-markdown"><MdContent text={cleanSummary || "completed."} /></span>
+        {(projectDir || entryFile) && <div style={{ color: TERM_DIM, marginLeft: 0 }}>
+          {projectDir && <span>  dir:{projectDir} </span>}
+          {entryFile && <span style={{ cursor: "pointer", color: TERM_GREEN, opacity: 0.6 }} onClick={() => sendCommand({ type: "OPEN_FILE", path: entryFile })}> entry:{entryFile}</span>}
         </div>}
-        {changedFiles.length > 0 && <div style={{ marginLeft: 14, fontSize: 10, color: "#444" }}>{changedFiles.length} files changed</div>}
-        {hasWebPreview(r) && onPreview && <span onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) onPreview(url); }} style={{ marginLeft: 14, color: "#18ff62", cursor: "pointer", fontSize: 10, opacity: 0.7 }}>[preview]</span>}
-        {!hasWebPreview(r) && buildPreviewCommand(r) && <span onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); }} style={{ marginLeft: 14, color: "#18ff62", cursor: "pointer", fontSize: 10, opacity: 0.7 }}>[launch]</span>}
+        {changedFiles.length > 0 && <div style={{ color: TERM_DIM }}> {changedFiles.length} files changed</div>}
+        {hasWebPreview(r) && onPreview && <span onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) onPreview(url); }} style={{ color: TERM_GREEN, cursor: "pointer", opacity: 0.5 }}> [preview]</span>}
+        {!hasWebPreview(r) && buildPreviewCommand(r) && <span onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); }} style={{ color: TERM_GREEN, cursor: "pointer", opacity: 0.5 }}> [launch]</span>}
       </div>
     );
   }
 
   return (
-    <div style={{ marginBottom: 3, fontSize: 11, fontFamily: "'SF Mono',Menlo,Consolas,monospace", fontWeight: 400, lineHeight: 1.45 }}>
-      <span style={{ color: "#444" }}>{ts}</span>
-      <span style={{ color: "#18ff62", marginLeft: 6, opacity: 0.7 }}>[agent]</span>
-      <div style={{ marginLeft: 14, marginTop: 1, color: "#8a8a7a", wordBreak: "break-word" }} className="chat-markdown">
+    <div className="term-msg" style={base}>
+      <span style={{ color: TERM_DIM }}>{ts} </span>
+      <span style={{ color: TERM_GREEN, opacity: 0.5 }}>[agent] </span>
+      <div style={{ marginLeft: 0, marginTop: 0, color: TERM_TEXT, wordBreak: "break-word" }} className="chat-markdown">
         {planContent ? (
           <>
             {textWithoutPlan && <MdContent text={textWithoutPlan} />}
-            <div style={{ marginTop: 3, paddingLeft: 8, borderLeft: "1px solid #18ff6230" }}>
-              <span style={{ color: "#18ff62", fontSize: 10, opacity: 0.5 }}>[plan]</span>
-              <div style={{ color: "#8a8a7a" }}><MdContent text={planContent} /></div>
+            <div style={{ marginTop: 2, paddingLeft: 8, borderLeft: `1px solid ${TERM_GREEN}15` }}>
+              <span style={{ color: TERM_GREEN, opacity: 0.3 }}>[plan] </span>
+              <MdContent text={planContent} />
             </div>
           </>
         ) : (
           <MdContent text={displayText} />
         )}
         {msg.result && msg.result.changedFiles.length > 0 && !planContent && (
-          <div style={{ fontSize: 10, color: "#444", marginTop: 2 }}>{msg.result.changedFiles.length} files: {msg.result.changedFiles.slice(0, 3).join(", ")}{msg.result.changedFiles.length > 3 ? ` +${msg.result.changedFiles.length - 3}` : ""}</div>
+          <div style={{ color: TERM_DIM }}> {msg.result.changedFiles.length} files: {msg.result.changedFiles.slice(0, 3).join(", ")}{msg.result.changedFiles.length > 3 ? ` +${msg.result.changedFiles.length - 3}` : ""}</div>
         )}
         {msg.result && hasWebPreview(msg.result) && onPreview && !isTeamMember && !isTeamLead && (
-          <span onClick={() => { const r = msg.result!; const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) setTimeout(() => onPreview(url), r.previewUrl ? 0 : 1500); }} style={{ color: "#18ff62", cursor: "pointer", fontSize: 10, opacity: 0.7 }}>[preview]</span>
+          <span onClick={() => { const r = msg.result!; const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) setTimeout(() => onPreview(url), r.previewUrl ? 0 : 1500); }} style={{ color: TERM_GREEN, cursor: "pointer", opacity: 0.5 }}> [preview]</span>
         )}
       </div>
     </div>
@@ -2180,16 +2245,19 @@ export default function OfficePage() {
   const selectedAgentState = selectedAgent ? agents.get(selectedAgent) : null;
   const isAgentBusy = selectedAgentState?.status === "working" || selectedAgentState?.status === "waiting_approval";
 
+  // Track streaming message text for auto-scroll
+  const lastMsgText = selectedAgentState?.messages?.length
+    ? selectedAgentState.messages[selectedAgentState.messages.length - 1]?.text?.length ?? 0
+    : 0;
+
   useEffect(() => {
-      // Scroll only the chat messages container, not the entire sidebar
       const el = chatEndRef.current;
       if (!el) return;
       const container = el.parentElement;
       if (container) {
         container.scrollTop = container.scrollHeight;
       }
-    
-  }, [selectedAgentState?.messages?.length, selectedAgentState?.status]);
+  }, [selectedAgentState?.messages?.length, selectedAgentState?.status, lastMsgText, isAgentBusy]);
 
   // Auto-select team lead when a team is first created
   useEffect(() => {
@@ -2816,7 +2884,7 @@ export default function OfficePage() {
                     }}>
                       {agent.isTeamLead && agent.status === "done"
                         ? "\u2713 Done"
-                        : <>{agent.status === "done" ? "\u2713 " : agent.status === "working" ? "\u25B6 " : ""}{cfg.label}</>
+                        : <>{agent.status === "done" ? "\u2713 " : ""}{cfg.label}</>
                       }
                     </span>
                     {/* Phase badge for team leads */}
@@ -2910,16 +2978,19 @@ export default function OfficePage() {
                       onDragOver={(e) => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); e.currentTarget.style.outline = "2px solid #e8b04060"; } }}
                       onDragLeave={(e) => { e.currentTarget.style.outline = "none"; }}
                       onDrop={(e) => { e.currentTarget.style.outline = "none"; handleDropImage(e); }}
+                      className="crt-screen"
                       style={{
                       flex: 1,
                       display: "flex",
                       flexDirection: "column",
-                      backgroundColor: "#0a0a10",
+                      backgroundColor: "#050808",
                       minHeight: 0,
                       height: "calc(100vh - 200px)",
                       maxHeight: "calc(100vh - 160px)",
                       overflow: "hidden",
                     }}>
+                      {/* CRT scanline bar */}
+                      <div className="crt-scanline-bar" />
                       {/* Messages */}
                       <div style={{
                         flex: 1, overflowY: "auto", padding: "8px 10px",
@@ -2963,9 +3034,6 @@ export default function OfficePage() {
                           <MessageBubble key={msg.id} msg={msg} onPreview={setPreviewUrl} isTeamLead={agentState?.isTeamLead} isTeamMember={isTeamMember} teamPhase={agentState?.isTeamLead ? getAgentPhase(agent.agentId) : null} />
                         ))}
 
-                        {busy && !agentState.pendingApproval && (
-                          <ThinkingBubble logLine={agentState.lastLogLine} />
-                        )}
 
                         {agentState.pendingApproval && (
                           <div style={{
@@ -2991,6 +3059,16 @@ export default function OfficePage() {
                                 >{"\u2715"} Reject</button>
                               </div>
                             )}
+                          </div>
+                        )}
+
+                        {busy && !agentState.pendingApproval ? (
+                          <div style={{ fontSize: TERM_SIZE, fontFamily: TERM_FONT, color: TERM_GREEN, opacity: 0.4, padding: "2px 0" }}>
+                            <span className="working-dots" />
+                          </div>
+                        ) : !busy && agentState.messages.length > 0 && (
+                          <div style={{ fontSize: TERM_SIZE, fontFamily: TERM_FONT, color: TERM_GREEN, opacity: 0.25, padding: "2px 0" }}>
+                            &gt;_
                           </div>
                         )}
 
@@ -3103,9 +3181,9 @@ export default function OfficePage() {
                                 Tasks are assigned by the Team Lead
                               </div>
                             ) : cardPhase === "execute" ? (
-                              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                                <div style={{ display: "flex", gap: 0, alignItems: "center" }}>
-                                  <span style={{ color: busy ? "#333" : "#18ff62", fontSize: 11, fontFamily: "'SF Mono',Menlo,Consolas,monospace", padding: "7px 0 7px 8px", flexShrink: 0 }}>&gt;</span>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                                <div style={{ display: "flex", gap: 0, alignItems: "center", borderTop: `1px solid ${TERM_GREEN}10` }}>
+                                  <span style={{ color: busy ? TERM_DIM : TERM_GREEN, fontSize: TERM_SIZE, fontFamily: TERM_FONT, padding: "6px 0 6px 8px", flexShrink: 0, textShadow: busy ? "none" : TERM_GLOW }}>&gt;</span>
                                   <input
                                     value={prompt}
                                     onChange={(e) => setPrompt(e.target.value)}
@@ -3113,19 +3191,18 @@ export default function OfficePage() {
                                       if (e.key === "Escape" && busy) { handleCancel(); return; }
                                       if (e.key === "Enter" && !e.nativeEvent.isComposing) handleRunTask();
                                     }}
-                                    placeholder={busy ? "ESC stop | type to continue" : ""}
+                                    placeholder={busy ? "esc stop · type to continue" : ""}
                                     style={{
-                                      flex: 1, padding: "7px 6px", border: "none",
-                                      backgroundColor: "transparent", color: "#b0b0a0", fontSize: 11, outline: "none",
-                                      fontFamily: "'SF Mono',Menlo,Consolas,monospace", fontWeight: 400,
+                                      flex: 1, padding: "6px 5px", border: "none",
+                                      backgroundColor: "transparent", color: "#b8d0b0", fontSize: TERM_SIZE, outline: "none",
+                                      fontFamily: TERM_FONT, fontWeight: 400, caretColor: TERM_GREEN,
                                     }}
                                   />
-                                  {busy && <span style={{ color: "#333", fontSize: 9, fontFamily: "'SF Mono',Menlo,Consolas,monospace", padding: "0 6px", flexShrink: 0 }}>working</span>}
-                                </div>
+                                                                  </div>
                                 {!busy && (
                                   <span
                                     onClick={async () => { if (await confirm("End project?")) handleEndProject(); }}
-                                    style={{ padding: "0 8px 4px", color: "#333", fontSize: 9, cursor: "pointer", fontFamily: "'SF Mono',Menlo,Consolas,monospace" }}
+                                    style={{ padding: "2px 8px 4px", color: TERM_DIM, fontSize: 12, cursor: "pointer", fontFamily: TERM_FONT }}
                                   >end project</span>
                                 )}
                               </div>
@@ -3198,8 +3275,8 @@ export default function OfficePage() {
                                 >End Project</button>
                               </div>
                             ) : (
-                              <div style={{ display: "flex", gap: 0, alignItems: "center" }}>
-                                <span style={{ color: isAgentBusy ? "#333" : "#18ff62", fontSize: 11, fontFamily: "'SF Mono',Menlo,Consolas,monospace", padding: "7px 0 7px 8px", flexShrink: 0 }}>&gt;</span>
+                              <div style={{ display: "flex", gap: 0, alignItems: "center", borderTop: `1px solid ${TERM_GREEN}10` }}>
+                                <span style={{ color: isAgentBusy ? TERM_DIM : TERM_GREEN, fontSize: TERM_SIZE, fontFamily: TERM_FONT, padding: "6px 0 6px 8px", flexShrink: 0, textShadow: isAgentBusy ? "none" : TERM_GLOW }}>&gt;</span>
                                 <input
                                   value={prompt}
                                   onChange={(e) => setPrompt(e.target.value)}
@@ -3207,16 +3284,15 @@ export default function OfficePage() {
                                     if (e.key === "Escape" && isAgentBusy) { handleCancel(); return; }
                                     if (e.key === "Enter" && !e.nativeEvent.isComposing) handleRunTask();
                                   }}
-                                  placeholder={isAgentBusy ? "ESC stop | type to continue" : ""}
+                                  placeholder={isAgentBusy ? "esc stop · type to continue" : ""}
                                   style={{
-                                    flex: 1, padding: "7px 6px", border: "none",
-                                    backgroundColor: "transparent", color: "#b0b0a0", fontSize: 11, outline: "none",
-                                    fontFamily: "'SF Mono',Menlo,Consolas,monospace", fontWeight: 400,
+                                    flex: 1, padding: "6px 5px", border: "none",
+                                    backgroundColor: "transparent", color: "#b8d0b0", fontSize: TERM_SIZE, outline: "none",
+                                    fontFamily: TERM_FONT, fontWeight: 400, caretColor: TERM_GREEN,
                                   }}
                                   autoFocus
                                 />
-                                {isAgentBusy && <span style={{ color: "#333", fontSize: 9, fontFamily: "'SF Mono',Menlo,Consolas,monospace", padding: "0 6px", flexShrink: 0 }}>working</span>}
-                              </div>
+                                                              </div>
                             )}
                           </div>
                         );
@@ -3562,9 +3638,6 @@ export default function OfficePage() {
                 <MessageBubble key={msg.id} msg={msg} onPreview={setPreviewUrl} isTeamLead={agentState.isTeamLead} isTeamMember={mobileIsTeamMember} teamPhase={agentState.isTeamLead ? getAgentPhase(agentState.agentId) : null} />
               ))}
 
-              {busy && !agentState.pendingApproval && (
-                <ThinkingBubble logLine={agentState.lastLogLine} />
-              )}
 
               {agentState.pendingApproval && (
                 <div style={{
