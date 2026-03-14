@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import type { AgentStatus, GatewayEvent, TaskResultPayload, AgentDefinition, UserRole } from "@office/shared";
 
+/** Pending PICK_FOLDER callbacks: requestId → callback */
+export const folderPickCallbacks = new Map<string, (path: string) => void>();
+
 export interface ChatMessage {
   id: string;
   role: "user" | "agent" | "system";
@@ -694,6 +697,15 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
         }
         case "PREVIEW_READY": {
           return { agents, pendingPreviewUrl: event.url };
+        }
+        case "FOLDER_PICKED": {
+          // Dispatch to pending callback
+          const cb = folderPickCallbacks.get(event.requestId);
+          if (cb) {
+            cb(event.path);
+            folderPickCallbacks.delete(event.requestId);
+          }
+          return { agents };
         }
         case "PROJECT_LIST": {
           return { agents, projectList: event.projects };

@@ -10,7 +10,7 @@ import type { Command, GatewayEvent, UserRole } from "@office/shared";
 import type { CommandMeta } from "./transport.js";
 import { DEFAULT_AGENT_DEFS, type AgentDefinition } from "@office/shared";
 import { nanoid } from "nanoid";
-import { execFile, execSync } from "child_process";
+import { exec, execFile, execSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 import os from "os";
@@ -441,6 +441,19 @@ function handleCommand(parsed: Command, meta: CommandMeta) {
           previewServer.serve(cleanPath);
         }
       }
+      break;
+    }
+    case "PICK_FOLDER": {
+      console.log(`[Gateway] PICK_FOLDER: opening native folder picker`);
+      const script = 'osascript -e \'tell application "System Events" to activate\' -e \'POSIX path of (choose folder with prompt "Select working directory")\'';
+      exec(script, (err, stdout) => {
+        const folderPath = stdout?.trim();
+        if (!err && folderPath) {
+          // Remove trailing slash
+          const cleanPath = folderPath.replace(/\/$/, "");
+          publishEvent({ type: "FOLDER_PICKED", requestId: parsed.requestId, path: cleanPath });
+        }
+      });
       break;
     }
     case "OPEN_FILE": {

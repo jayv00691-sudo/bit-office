@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { useOfficeStore } from "@/store/office-store";
+import { useOfficeStore, folderPickCallbacks } from "@/store/office-store";
 import type { ChatMessage, TeamChatMessage, TeamPhaseState } from "@/store/office-store";
 import { connect, sendCommand } from "@/lib/connection";
 import { getConnection } from "@/lib/storage";
@@ -1489,7 +1489,6 @@ function HireModal({ agentDefs, onHire, onCreate, onEdit, onDelete, onClose, ass
   const [selectedBackend, setSelectedBackend] = useState("claude");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [workDir, setWorkDir] = useState<string>("");
-  const folderInputRef = useRef<HTMLInputElement>(null);
 
   // Leaders can only work in teams, not as solo agents
   const builtinAgents = agentDefs.filter((a) => a.isBuiltin && a.teamRole !== "leader");
@@ -1539,11 +1538,10 @@ function HireModal({ agentDefs, onHire, onCreate, onEdit, onDelete, onClose, ass
           <div style={{ fontSize: 12, color: "#7a6858", marginBottom: 5, fontFamily: "monospace", letterSpacing: "0.05em" }}>WORKING DIRECTORY</div>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <input
-              ref={folderInputRef}
               type="text"
               value={workDir}
               onChange={(e) => setWorkDir(e.target.value)}
-              placeholder="Default (built-in workspace)"
+              placeholder="Paste path or click Browse"
               style={{
                 flex: 1, padding: "6px 8px", fontSize: 12,
                 border: "1px solid #3d2e54", backgroundColor: "#1a1530",
@@ -1553,20 +1551,9 @@ function HireModal({ agentDefs, onHire, onCreate, onEdit, onDelete, onClose, ass
             />
             <button
               onClick={() => {
-                const input = document.createElement("input");
-                input.type = "file";
-                input.setAttribute("webkitdirectory", "");
-                input.setAttribute("directory", "");
-                input.onchange = () => {
-                  const files = input.files;
-                  if (files && files.length > 0) {
-                    // Extract the common directory path from the selected folder
-                    const path = files[0].webkitRelativePath;
-                    const dir = path.split("/")[0];
-                    setWorkDir(dir);
-                  }
-                };
-                input.click();
+                const rid = nanoid(6);
+                folderPickCallbacks.set(rid, (p) => setWorkDir(p));
+                sendCommand({ type: "PICK_FOLDER", requestId: rid });
               }}
               style={{
                 padding: "6px 10px", border: "1px solid #3d2e54",
@@ -1577,7 +1564,7 @@ function HireModal({ agentDefs, onHire, onCreate, onEdit, onDelete, onClose, ass
             >Browse</button>
           </div>
           <div style={{ fontSize: 10, color: "#5a4a38", marginTop: 3, fontFamily: "monospace" }}>
-            Paste full path or leave empty for default
+            Empty = default workspace
           </div>
         </div>
 
@@ -1963,7 +1950,7 @@ function HireTeamModal({ agentDefs, onCreateTeam, onClose, assetsReady }: {
               type="text"
               value={workDir}
               onChange={(e) => setWorkDir(e.target.value)}
-              placeholder="Default (built-in workspace)"
+              placeholder="Paste path or click Browse"
               style={{
                 flex: 1, padding: "6px 8px", fontSize: 12,
                 border: "1px solid #3d2e54", backgroundColor: "#1a1530",
@@ -1973,19 +1960,9 @@ function HireTeamModal({ agentDefs, onCreateTeam, onClose, assetsReady }: {
             />
             <button
               onClick={() => {
-                const input = document.createElement("input");
-                input.type = "file";
-                input.setAttribute("webkitdirectory", "");
-                input.setAttribute("directory", "");
-                input.onchange = () => {
-                  const files = input.files;
-                  if (files && files.length > 0) {
-                    const path = files[0].webkitRelativePath;
-                    const dir = path.split("/")[0];
-                    setWorkDir(dir);
-                  }
-                };
-                input.click();
+                const rid = nanoid(6);
+                folderPickCallbacks.set(rid, (p) => setWorkDir(p));
+                sendCommand({ type: "PICK_FOLDER", requestId: rid });
               }}
               style={{
                 padding: "6px 10px", border: "1px solid #3d2e54",
@@ -1996,7 +1973,7 @@ function HireTeamModal({ agentDefs, onCreateTeam, onClose, assetsReady }: {
             >Browse</button>
           </div>
           <div style={{ fontSize: 10, color: "#5a4a38", marginTop: 3, fontFamily: "monospace" }}>
-            Paste full path — team projects will be created here
+            Empty = default workspace
           </div>
         </div>
 
@@ -2469,6 +2446,7 @@ export default function OfficePage() {
     sendCommand({ type: "SAVE_AGENT_DEF", agent: def });
     setShowCreateAgent(false);
     setEditingAgent(null);
+    setShowHireModal(true);
   }, []);
 
   const handleDeleteAgentDef = useCallback((agentDefId: string) => {

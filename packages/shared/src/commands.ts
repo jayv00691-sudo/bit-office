@@ -114,6 +114,11 @@ export const DeleteAgentDefCommand = z.object({
   agentDefId: z.string(),
 });
 
+export const PickFolderCommand = z.object({
+  type: z.literal("PICK_FOLDER"),
+  requestId: z.string(),
+});
+
 export const SuggestCommand = z.object({
   type: z.literal("SUGGEST"),
   text: z.string().max(500),
@@ -152,6 +157,7 @@ export const CommandSchema = z.discriminatedUnion("type", [
   EndProjectCommand,
   SaveAgentDefCommand,
   DeleteAgentDefCommand,
+  PickFolderCommand,
   SuggestCommand,
   RateProjectCommand,
   ListProjectsCommand,
@@ -174,6 +180,7 @@ export type ApprovePlanCommand = z.infer<typeof ApprovePlanCommand>;
 export type EndProjectCommand = z.infer<typeof EndProjectCommand>;
 export type SaveAgentDefCommand = z.infer<typeof SaveAgentDefCommand>;
 export type DeleteAgentDefCommand = z.infer<typeof DeleteAgentDefCommand>;
+export type PickFolderCommand = z.infer<typeof PickFolderCommand>;
 export type SuggestCommand = z.infer<typeof SuggestCommand>;
 export type RateProjectCommand = z.infer<typeof RateProjectCommand>;
 export type ListProjectsCommand = z.infer<typeof ListProjectsCommand>;
