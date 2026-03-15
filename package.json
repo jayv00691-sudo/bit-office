@@ -12,7 +12,9 @@
     "publish:release": "pnpm run build:release && cd apps/gateway && npm publish",
     "lint": "pnpm -r lint",
     "bootstrap": "bash scripts/bootstrap.sh",
-    "start:local": "bash scripts/start-local.sh"
+    "start:local": "bash scripts/start-local.sh",
+    "dev:desktop": "pnpm --filter bit-office-desktop dev",
+    "build:desktop": "pnpm --filter bit-office-desktop build"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
