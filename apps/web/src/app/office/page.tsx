@@ -725,12 +725,39 @@ const TERM_DIM = "#3a5a3a";
 const TERM_TEXT = "#7a9a7a";
 const TERM_GLOW = `0 0 8px rgba(24,255,98,0.25)`;
 
+function SysMsg({ ts, tag, text, firstLine, isLong }: { ts: string; tag: string; text: string; firstLine: string; isLong: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="term-msg" style={{ marginBottom: 1, fontSize: TERM_SIZE, fontFamily: TERM_FONT, fontWeight: 400, lineHeight: 1.4 }}>
+      <span style={{ color: TERM_DIM }}>{ts} </span>
+      {isLong && (
+        <span
+          onClick={() => setExpanded(!expanded)}
+          style={{ color: TERM_GREEN, opacity: 0.4, cursor: "pointer", marginRight: 2 }}
+        >{expanded ? "\u25BE" : "\u25B8"}</span>
+      )}
+      <span style={{ color: TERM_GREEN, opacity: 0.4 }}>[{tag}] </span>
+      <span style={{ color: "#556655", wordBreak: "break-word" }} className="chat-markdown">
+        {isLong && !expanded
+          ? <span>{firstLine}</span>
+          : <MdContent text={text} />
+        }
+      </span>
+    </div>
+  );
+}
+
 function MessageBubble({ msg, agentName, onPreview, isTeamLead, isTeamMember, teamPhase }: { msg: ChatMessage; agentName?: string; onPreview?: (url: string) => void; isTeamLead?: boolean; isTeamMember?: boolean; teamPhase?: string | null }) {
   const ts = new Date(msg.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const base: React.CSSProperties = { marginBottom: 1, fontSize: TERM_SIZE, fontFamily: TERM_FONT, fontWeight: 400, lineHeight: 1.4 };
 
   // ── User input ──
   if (msg.role === "user") {
+    // Team delegation received by dev/reviewer — collapsible
+    const isFromTeam = msg.text.startsWith("[From ");
+    if (isFromTeam && msg.text.length > 80) {
+      return <SysMsg ts={ts} tag="task" text={msg.text} firstLine={msg.text.slice(0, 80) + "..."} isLong={true} />;
+    }
     return (
       <div className="term-msg" style={base}>
         <span style={{ color: TERM_DIM }}>{ts} </span>
@@ -746,13 +773,9 @@ function MessageBubble({ msg, agentName, onPreview, isTeamLead, isTeamMember, te
     const isResult = msg.text.startsWith("Result from ");
     const isQueued = msg.text.startsWith("Task queued ");
     const tag = isDelegation ? "delegate" : isResult ? "result" : isQueued ? "queued" : "sys";
-    return (
-      <div className="term-msg" style={base}>
-        <span style={{ color: TERM_DIM }}>{ts} </span>
-        <span style={{ color: TERM_GREEN, opacity: 0.4 }}>[{tag}] </span>
-        <span style={{ color: "#556655", wordBreak: "break-word" }} className="chat-markdown"><MdContent text={msg.text} /></span>
-      </div>
-    );
+    const isLong = msg.text.length > 80;
+    const firstLine = isLong ? msg.text.slice(0, 80) + "..." : msg.text;
+    return <SysMsg ts={ts} tag={tag} text={msg.text} firstLine={firstLine} isLong={isLong} />;
   }
 
   // ── Agent ──

@@ -619,13 +619,13 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
           const streamId = agent.currentTaskId ? agent.currentTaskId + "-stream" : null;
           const lastMsg = agent.messages.length > 0 ? agent.messages[agent.messages.length - 1] : null;
           if (streamId && lastMsg?.id === streamId) {
-            // Show latest chunk as streaming preview + always append to accumulated
+            // Accumulate all output for full terminal-style display
             const prev = lastMsg._accumulatedText ?? "";
             const accumulated = prev ? prev + "\n" + event.chunk : event.chunk;
             const updatedMessages = [...agent.messages];
             updatedMessages[updatedMessages.length - 1] = {
               ...lastMsg,
-              text: event.chunk,
+              text: accumulated,
               timestamp: Date.now(),
               _accumulatedText: accumulated,
             };

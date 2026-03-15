@@ -151,6 +151,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           .chat-markdown p { margin: 0 0 2px !important; }
           .chat-markdown ul, .chat-markdown ol { margin: 2px 0 !important; padding-left: 16px !important; }
           .chat-markdown li { margin: 0 !important; }
+          .chat-markdown hr { border: none !important; border-top: 1px solid #1a2a1a !important; margin: 4px 0 !important; }
           .chat-markdown a, .crt-screen a { color: #7a9a7a !important; text-decoration: none !important; }
           .chat-markdown a:hover, .crt-screen a:hover { text-decoration: underline !important; }
           @keyframes dot-pulse {

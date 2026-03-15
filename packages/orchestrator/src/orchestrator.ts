@@ -227,9 +227,11 @@ export class Orchestrator extends EventEmitter<OrchestratorEventMap> {
     // 2. Solo agents sharing the same workDir: auto-isolate via worktree
     const teamProjectDir = this.delegationRouter.getTeamProjectDir();
     const effectiveRepo = opts?.repoPath;
-    const needsWorktree = this.worktreeEnabled && !session.worktreePath && (
-      // Team fallback (retry/edge cases)
-      (session.teamId && teamProjectDir) ||
+    // Worktree only for agents without existing session (new tasks only).
+    // Agents with hasHistory would break on --resume in a different CWD.
+    // Team dev worktrees are created by delegation.ts (fresh delegated tasks, no resume).
+    const isLeader = this.agentManager.isTeamLead(agentId);
+    const needsWorktree = this.worktreeEnabled && !session.worktreePath && !isLeader && !session.hasHistory && (
       // Solo agents: isolate when another solo agent shares the same repoPath
       (!session.teamId && effectiveRepo && this.hasSoloNeighbor(agentId, effectiveRepo))
     );
