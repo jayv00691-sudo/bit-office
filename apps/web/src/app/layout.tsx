@@ -221,6 +221,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           /* ── Horizontal scroll for paths ── */
           .term-path-scroll { overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
           .term-path-scroll::-webkit-scrollbar { display: none; }
+          /* ── Scene loading overlay fade-out ── */
+          @keyframes scene-overlay-fadeout {
+            from { opacity: 1; }
+            to { opacity: 0; visibility: hidden; }
+          }
           /* ── Chat area vignette ── */
           .term-chat-area {
             background-image: linear-gradient(to bottom, rgba(0,0,0,0.15) 0%, transparent 40px, transparent 100%);

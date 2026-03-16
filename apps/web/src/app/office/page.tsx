@@ -2815,6 +2815,13 @@ export default function OfficePage() {
     <div style={{ height: "100vh", width: "100vw", position: "relative", overflow: "hidden", display: "flex" }}>
       {/* Game Scene — fills remaining space after sidebar, centered */}
       {sceneVisible && !consoleMode && <div style={{ flex: 1, position: "relative", minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", marginRight: "min(50vw, 960px)" }}>
+        {/* Loading overlay — fades out to reveal scene */}
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 5,
+          backgroundColor: "#16122a",
+          animation: "scene-overlay-fadeout 2s ease-out 0.1s forwards",
+          pointerEvents: "none",
+        }} />
         <div style={{ width: `min(100%, calc(100vh * ${mapAspect}))`, height: `min(100%, calc(100vw / ${mapAspect}))`, aspectRatio: `${mapAspect}`, position: "relative", maxHeight: "100vh" }}>
         <PixelOfficeScene
           onAdapterReady={handleAdapterReady}
@@ -3596,7 +3603,7 @@ export default function OfficePage() {
                   No external agents detected
                 </div>
               )}
-              {activeAgentList.map((agent) => {
+              {activeAgentList.map((agent, idx) => {
                 const isActive = selectedAgent === agent.agentId;
                 const agentState = agents.get(agent.agentId);
                 const agentBusy = agentState?.status === "working";
