@@ -1080,6 +1080,8 @@ export function getCharacterThumbnail(paletteIndex: number): SpriteData | null {
   return char.down[1] // standing frame facing down
 }
 
+
+
 export function getCharacterSprites(paletteIndex: number, hueShift = 0): CharacterSprites {
   const cacheKey = `${paletteIndex}:${hueShift}`
   const cached = spriteCache.get(cacheKey)

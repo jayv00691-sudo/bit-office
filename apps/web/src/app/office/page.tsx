@@ -987,7 +987,7 @@ function MessageBubble({ msg, agentName, onPreview, isTeamLead, isTeamMember, te
         <div style={{ ...base, padding: "2px 0" }}>
           <span style={{ color: TERM_DIM, fontSize: 10, marginRight: 6 }}>{ts}</span>
           <span style={{ color: TERM_GREEN, opacity: 0.4, fontSize: 10 }}>{agentName ?? "agent"}</span>
-          <span style={{ color: TERM_GREEN, opacity: 0.3, marginLeft: 6 }} className="working-dots" />
+          <span style={{ color: TERM_GREEN, opacity: 0.5, marginLeft: 8 }} className="working-dots"><span className="working-dots-mid" /></span>
         </div>
       );
     }
@@ -1108,6 +1108,8 @@ function SpriteAvatar({ palette, zoom = 3, ready }: { palette: number; zoom?: nu
 
   return <canvas ref={canvasRef} style={{ width: 16 * zoom, height: 32 * zoom, imageRendering: "pixelated" }} />;
 }
+
+
 
 /** Loading overlay with a random pixel character walking back and forth */
 function LoadingOverlay({ visible }: { visible: boolean }) {
@@ -3459,8 +3461,8 @@ export default function OfficePage() {
 
 
                         {busy && !agentState.pendingApproval && agentState.messages.length > 0 && agentState.messages[agentState.messages.length - 1]?.text && (
-                          <div style={{ fontSize: TERM_SIZE, fontFamily: TERM_FONT, color: TERM_GREEN, opacity: 0.3, padding: "2px 0" }}>
-                            <span className="working-dots" />
+                          <div style={{ padding: "4px 0" }}>
+                            <span style={{ color: TERM_GREEN, opacity: 0.5 }} className="working-dots"><span className="working-dots-mid" /></span>
                           </div>
                         )}
                         <div ref={chatEndRef} />

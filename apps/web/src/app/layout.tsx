@@ -261,15 +261,38 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           .chat-markdown tr:hover td {
             background: rgba(var(--term-accent-rgb),0.03) !important;
           }
-          @keyframes dot-pulse {
-            0% { content: '.'; }
-            33% { content: '..'; }
-            66% { content: '...'; }
-            100% { content: '.'; }
+          @keyframes bounce-dot {
+            0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+            40% { transform: translateY(-5px); opacity: 1; }
           }
+          .working-dots {
+            display: inline-flex;
+            gap: 3px;
+            align-items: center;
+            vertical-align: middle;
+          }
+          .working-dots::before,
           .working-dots::after {
             content: '';
-            animation: dot-pulse 1.5s steps(1) infinite;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: bounce-dot 1.2s ease-in-out infinite;
+          }
+          .working-dots::before {
+            animation-delay: 0s;
+          }
+          .working-dots::after {
+            animation-delay: 0.3s;
+          }
+          .working-dots-mid {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: bounce-dot 1.2s ease-in-out infinite;
+            animation-delay: 0.15s;
           }
           @keyframes px-blink {
             0%, 49% { opacity: 1; }
