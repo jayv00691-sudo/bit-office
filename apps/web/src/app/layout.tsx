@@ -57,26 +57,39 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             --px-amber: #e0900a;
             --px-amber-bg: rgba(232, 176, 64, 0.14);
           }
+          /* Hide native scrollbar, use custom indicator instead */
           * {
-            scrollbar-width: thin;
-            scrollbar-color: var(--term-border) var(--term-surface);
+            scrollbar-width: none;
           }
           *::-webkit-scrollbar {
-            width: 3px;
-            height: 3px;
+            display: none;
           }
-          *::-webkit-scrollbar-track {
-            background: transparent;
+          /* Custom scrollbar indicator */
+          .custom-scrollbar {
+            position: absolute;
+            right: 1px;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            pointer-events: none;
+            z-index: 10;
+            opacity: 0;
+            transition: opacity 0.3s;
           }
-          *::-webkit-scrollbar-thumb {
+          .custom-scrollbar.visible {
+            opacity: 1;
+          }
+          .custom-scrollbar-thumb {
+            position: absolute;
+            right: 0;
+            width: 4px;
+            min-height: 20px;
             background: var(--term-scroll-thumb);
             border-radius: 2px;
+            transition: background 0.15s;
           }
-          *::-webkit-scrollbar-thumb:hover {
-            background: rgba(var(--term-accent-rgb), 0.25);
-          }
-          *::-webkit-scrollbar-corner {
-            background: transparent;
+          .custom-scrollbar-thumb:hover {
+            background: rgba(var(--term-accent-rgb), 0.3);
           }
           /* Custom select styling for WebView compatibility */
           select {
@@ -256,6 +269,56 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   for (var r of regs) r.unregister();
                 });
               }
+            `,
+          }}
+        />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                var attached = new WeakSet();
+                var timers = new WeakMap();
+                function addScrollbar(el) {
+                  if (attached.has(el)) return;
+                  var cs = getComputedStyle(el);
+                  var ov = cs.overflowY;
+                  if (ov !== 'auto' && ov !== 'scroll') return;
+                  if (cs.position === 'static') el.style.position = 'relative';
+                  var track = document.createElement('div');
+                  track.className = 'custom-scrollbar';
+                  var thumb = document.createElement('div');
+                  thumb.className = 'custom-scrollbar-thumb';
+                  track.appendChild(thumb);
+                  el.appendChild(track);
+                  attached.add(el);
+                  function update() {
+                    var sh = el.scrollHeight, ch = el.clientHeight;
+                    if (sh <= ch) { track.classList.remove('visible'); return; }
+                    var ratio = ch / sh;
+                    var thumbH = Math.max(20, ratio * ch);
+                    var scrollRatio = el.scrollTop / (sh - ch);
+                    var thumbTop = scrollRatio * (ch - thumbH);
+                    thumb.style.height = thumbH + 'px';
+                    thumb.style.top = (el.scrollTop + thumbTop) + 'px';
+                    track.classList.add('visible');
+                    clearTimeout(timers.get(el));
+                    timers.set(el, setTimeout(function() { track.classList.remove('visible'); }, 1200));
+                  }
+                  el.addEventListener('scroll', update, { passive: true });
+                  new ResizeObserver(update).observe(el);
+                  update();
+                }
+                function scan() {
+                  document.querySelectorAll('*').forEach(function(el) {
+                    var cs = getComputedStyle(el);
+                    if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') addScrollbar(el);
+                  });
+                }
+                var mo = new MutationObserver(function() { requestAnimationFrame(scan); });
+                mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+                if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scan);
+                else scan();
+              })();
             `,
           }}
         />
