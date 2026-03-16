@@ -2575,6 +2575,7 @@ export default function OfficePage() {
     }
     setSelectedAgent(agentId);
     setChatOpen(true);
+    setExpandedSection("agents");
     setShowHireModal(false);
   }, [agents]);
 

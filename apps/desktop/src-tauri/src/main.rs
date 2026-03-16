@@ -80,10 +80,20 @@ fn main() {
                 let gateway_js = sidecar_dir.join("gateway.js");
                 let web_dir = sidecar_dir.join("web");
 
+                // Resolve user's full PATH from login shell (macOS GUI apps only get /usr/bin:/bin)
+                let full_path = std::process::Command::new("/bin/bash")
+                    .args(["-l", "-c", "echo $PATH"])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|p| p.trim().to_string())
+                    .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+
                 let shell = app.shell();
                 match shell
                     .command(node_bin.to_str().unwrap())
                     .args([gateway_js.to_str().unwrap()])
+                    .env("PATH", &full_path)
                     .env("WEB_DIR", web_dir.to_str().unwrap())
                     .env("NO_OPEN", "1")
                     .spawn()
