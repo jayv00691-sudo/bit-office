@@ -555,7 +555,13 @@ export class AgentSession {
             this.onTaskComplete?.(this.agentId, completedTaskId, summary, true, fullOutput);
             this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, CONFIG.timing.idleDoneDelayMs);
           } else {
-            const errorMsg = this.stdoutBuffer.slice(0, 300) || this.stderrBuffer.slice(-300) || `Process exited with code ${code}`;
+            // Extract meaningful error lines from stderr (e.g. "ERROR: You've hit your usage limit...")
+            const stderrErrorLines = this.stderrBuffer
+              .split("\n")
+              .filter((l) => /^\s*(ERROR|error|Error)[:\s]/i.test(l))
+              .map((l) => l.trim());
+            const stderrError = stderrErrorLines[stderrErrorLines.length - 1] ?? "";
+            const errorMsg = stderrError || this.stdoutBuffer.slice(0, 300) || this.stderrBuffer.slice(-300) || `Process exited with code ${code}`;
             this._lastResult = `failed: ${errorMsg.slice(0, 120)}`;
             this.setStatus("error");
             this.onEvent({
@@ -579,11 +585,14 @@ export class AgentSession {
         this.process = null;
         this.currentTaskId = null;
         this.setStatus("error");
+        const errorMsg = (err as NodeJS.ErrnoException).code === "ENOENT"
+          ? `"${this.backend.command}" not found. Please install it and make sure it's in your PATH.`
+          : err.message;
         this.onEvent({
           type: "task:failed",
           agentId: this.agentId,
           taskId,
-          error: err.message,
+          error: errorMsg,
         });
         this.idleTimer = setTimeout(() => { this.idleTimer = null; this.setStatus("idle"); }, CONFIG.timing.idleErrorDelayMs);
       });

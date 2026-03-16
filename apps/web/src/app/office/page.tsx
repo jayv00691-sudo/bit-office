@@ -735,9 +735,9 @@ const TERM_THEMES: Record<string, TermTheme> = {
     name: "Green Hacker",
     accent: "#18ff62",
     accentRgb: "24,255,98",
-    dim: "#3a5a3a",
-    text: "#7a9a7a",
-    textBright: "#b8d0b0",
+    dim: "#5a7a5a",
+    text: "#9aba9a",
+    textBright: "#c8e0c0",
     bg: "#050808",
     panel: "#0c1210",
     surface: "#0a0e0a",
@@ -752,9 +752,9 @@ const TERM_THEMES: Record<string, TermTheme> = {
     name: "Tokyo Night",
     accent: "#7aa2f7",
     accentRgb: "122,162,247",
-    dim: "#4a5488",
-    text: "#7982b4",
-    textBright: "#c0caf5",
+    dim: "#6070a0",
+    text: "#95a0cc",
+    textBright: "#d0d8f8",
     bg: "#1a1b26",
     panel: "#16161e",
     surface: "#1c1e2e",
@@ -769,8 +769,8 @@ const TERM_THEMES: Record<string, TermTheme> = {
     name: "Dracula",
     accent: "#bd93f9",
     accentRgb: "189,147,249",
-    dim: "#5a4f80",
-    text: "#8b7ec8",
+    dim: "#7268a0",
+    text: "#a898e0",
     textBright: "#f0eaff",
     bg: "#1c1b2e",
     panel: "#22213a",
@@ -786,9 +786,9 @@ const TERM_THEMES: Record<string, TermTheme> = {
     name: "Nord",
     accent: "#88c0d0",
     accentRgb: "136,192,208",
-    dim: "#4e6878",
-    text: "#7da0b4",
-    textBright: "#d8eaf0",
+    dim: "#6888a0",
+    text: "#9ac0d4",
+    textBright: "#e0f0f8",
     bg: "#1c2028",
     panel: "#222830",
     surface: "#262e38",
@@ -803,8 +803,8 @@ const TERM_THEMES: Record<string, TermTheme> = {
     name: "Monokai",
     accent: "#a6e22e",
     accentRgb: "166,226,46",
-    dim: "#5a6a30",
-    text: "#8aa050",
+    dim: "#7a8a48",
+    text: "#a8c068",
     textBright: "#e8f0c8",
     bg: "#1a1c14",
     panel: "#22241a",
@@ -820,9 +820,10 @@ const TERM_THEMES: Record<string, TermTheme> = {
 
 // Mutable theme variables — reassigned by applyTermTheme()
 let TERM_GREEN = "#18ff62";
-let TERM_DIM = "#3a5a3a";
-let TERM_TEXT = "#7a9a7a";
-let TERM_TEXT_BRIGHT = "#b8d0b0";
+let TERM_DIM = "#5a7a5a";
+let TERM_TEXT = "#9aba9a";
+let TERM_TEXT_BRIGHT = "#c8e0c0";
+let TERM_ERROR = "#ff6b6b";
 let TERM_GLOW = "0 0 8px rgba(24,255,98,0.25)";
 let TERM_BG = "#050808";
 let TERM_PANEL = "#0c1210";
@@ -878,19 +879,21 @@ function formatDuration(ms: number): string {
   return `${verb} for ${min}m ${remSec}s`;
 }
 
-function SysMsg({ ts, tag, text, firstLine, isLong }: { ts: string; tag: string; text: string; firstLine: string; isLong: boolean }) {
+function SysMsg({ ts, tag, text, firstLine, isLong, isError }: { ts: string; tag: string; text: string; firstLine: string; isLong: boolean; isError?: boolean }) {
   const [expanded, setExpanded] = useState(false);
+  const textColor = isError ? TERM_ERROR : TERM_DIM;
+  const tagColor = isError ? TERM_ERROR : TERM_DIM;
   return (
-    <div className="term-msg" style={{ marginBottom: 1, fontSize: TERM_SIZE, fontFamily: TERM_FONT, fontWeight: 400, lineHeight: 1.4, opacity: 0.5 }}>
-      <span style={{ color: TERM_DIM, fontSize: 10 }}>{ts} </span>
+    <div className="term-msg" style={{ marginBottom: 1, fontSize: TERM_SIZE, fontFamily: TERM_FONT, fontWeight: 400, lineHeight: 1.4, opacity: isError ? 0.9 : 0.5 }}>
+      <span style={{ color: isError ? TERM_ERROR : TERM_DIM, fontSize: 10 }}>{ts} </span>
       {isLong && (
         <span
           onClick={() => setExpanded(!expanded)}
-          style={{ color: TERM_GREEN, opacity: 0.4, cursor: "pointer", marginRight: 2 }}
+          style={{ color: isError ? TERM_ERROR : TERM_GREEN, opacity: 0.4, cursor: "pointer", marginRight: 2 }}
         >{expanded ? "\u25BE" : "\u25B8"}</span>
       )}
-      <span style={{ color: TERM_DIM, fontSize: 10 }}>[{tag}] </span>
-      <span style={{ color: TERM_DIM, wordBreak: "break-word" }} className="chat-markdown">
+      <span style={{ color: tagColor, fontSize: 10 }}>[{tag}] </span>
+      <span style={{ color: textColor, wordBreak: "break-word" }} className="chat-markdown">
         {isLong && !expanded
           ? <span>{firstLine}</span>
           : <MdContent text={text} />
@@ -931,10 +934,11 @@ function MessageBubble({ msg, agentName, onPreview, isTeamLead, isTeamMember, te
     const isDelegation = msg.text.startsWith("Delegated to ");
     const isResult = msg.text.startsWith("Result from ");
     const isQueued = msg.text.startsWith("Task queued ");
-    const tag = isDelegation ? "delegate" : isResult ? "result" : isQueued ? "queued" : "sys";
+    const isError = /^(ERROR|error|Error)[:\s]|not found\b|failed\b|limit\b|denied\b/i.test(msg.text) && !isDelegation && !isResult && !isQueued;
+    const tag = isDelegation ? "delegate" : isResult ? "result" : isQueued ? "queued" : isError ? "error" : "sys";
     const isLong = msg.text.length > 80;
     const firstLine = isLong ? msg.text.slice(0, 80) + "..." : msg.text;
-    return <SysMsg ts={ts} tag={tag} text={msg.text} firstLine={firstLine} isLong={isLong} />;
+    return <SysMsg ts={ts} tag={tag} text={msg.text} firstLine={firstLine} isLong={isLong} isError={isError} />;
   }
 
   // ── Agent ──
