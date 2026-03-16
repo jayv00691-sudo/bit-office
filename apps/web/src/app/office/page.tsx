@@ -2448,7 +2448,6 @@ export default function OfficePage() {
   useEffect(() => {
     const conn = getConnection();
     if (!conn || !conn.sessionToken) {
-      // No connection or stale pre-RBAC connection — force re-pair
       if (conn && !conn.sessionToken) {
         const { clearConnection } = require("@/lib/storage");
         clearConnection();
@@ -2456,11 +2455,55 @@ export default function OfficePage() {
       router.push("/pair");
       return;
     }
-    // Set role from stored connection info
-    setRole(conn.role ?? "owner");
-    useOfficeStore.getState().hydrate();
-    const scopedDisconnect = connect(conn);
-    return scopedDisconnect;
+
+    // Re-detect gateway port instead of using stale stored wsUrl
+    const detectAndConnect = async () => {
+      setRole(conn.role ?? "owner");
+      useOfficeStore.getState().hydrate();
+
+      // If mode is ably, use stored info as-is
+      if (conn.mode === "ably") {
+        return connect(conn);
+      }
+
+      // For ws mode: detect live gateway port
+      const isDev = window.location.port === "3000" || window.location.port === "3002";
+      const ports = isDev ? [9099, 9090] : [9090, 9099];
+
+      // Try same-origin first (production bundled mode)
+      if (!isDev) {
+        try {
+          const res = await fetch(`${window.location.origin}/connect`, { signal: AbortSignal.timeout(500) });
+          if (res.ok) {
+            const data = await res.json();
+            const freshConn = { ...conn, wsUrl: window.location.origin.replace(/^http/, "ws"), sessionToken: data.sessionToken };
+            const { saveConnection } = await import("@/lib/storage");
+            saveConnection(freshConn);
+            return connect(freshConn);
+          }
+        } catch { /* not bundled mode */ }
+      }
+
+      // Scan preferred ports
+      for (const port of ports) {
+        try {
+          const res = await fetch(`http://localhost:${port}/connect`, { signal: AbortSignal.timeout(1000) });
+          if (!res.ok) continue;
+          const data = await res.json();
+          const freshConn = { ...conn, wsUrl: `ws://localhost:${port}`, sessionToken: data.sessionToken };
+          const { saveConnection } = await import("@/lib/storage");
+          saveConnection(freshConn);
+          return connect(freshConn);
+        } catch { /* try next */ }
+      }
+
+      // Fallback to stored wsUrl
+      return connect(conn);
+    };
+
+    let scopedDisconnect: (() => void) | undefined;
+    detectAndConnect().then((d) => { scopedDisconnect = d; });
+    return () => { scopedDisconnect?.(); };
   }, [router, setRole]);
 
   const selectedAgentState = selectedAgent ? agents.get(selectedAgent) : null;
@@ -2814,7 +2857,7 @@ export default function OfficePage() {
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", overflow: "hidden", display: "flex" }}>
       {/* Game Scene — fills remaining space after sidebar, centered */}
-      {sceneVisible && !consoleMode && <div style={{ flex: 1, position: "relative", minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", marginRight: "min(50vw, 960px)" }}>
+      {sceneVisible && !consoleMode && <div style={{ flex: 1, position: "relative", minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", marginRight: "calc(min(40vw, 800px) + 30px)" }}>
         {/* Loading overlay — fades out to reveal scene */}
         <div style={{
           position: "absolute", inset: 0, zIndex: 5,
@@ -3002,22 +3045,41 @@ export default function OfficePage() {
 
       {/* ── Right Sidebar (desktop only) — takes remaining space after game scene ── */}
       {!isMobile && <>
-        {/* ── Bookmark tabs + arrow button — fixed on the left edge of sidebar ── */}
-        <div style={{
+
+        <div className="term-dotgrid" style={{
           position: "fixed",
-          left: consoleMode ? 0 : undefined,
-          right: consoleMode ? undefined : "min(50vw, 960px)",
-          top: "50%",
-          transform: "translateY(-50%)",
-          zIndex: 30,
+          right: 0,
+          top: 0,
+          width: consoleMode ? "100vw" : "min(40vw, 800px)",
+          minWidth: 260,
+          height: "100vh",
+          backgroundColor: TERM_PANEL,
+          border: "none",
+          borderLeft: consoleMode ? undefined : `1px solid ${TERM_GREEN}15`,
+          boxShadow: consoleMode ? "none" : TERM_GLOW_BORDER,
           display: "flex",
-          flexDirection: "column",
-          alignItems: consoleMode ? "flex-start" : "flex-end",
-          gap: 2,
-          transition: "left 0.3s ease, right 0.3s ease, opacity 0.15s ease",
-          opacity: consoleMode || sceneVisible ? 1 : 0,
-          pointerEvents: consoleMode || sceneVisible ? "auto" : "none",
+          flexDirection: "row",
+          overflow: "visible",
+          transition: "width 0.3s ease",
+          zIndex: 10,
         }}>
+
+          {/* ── Bookmark tabs — absolutely positioned to the left of sidebar ── */}
+          <div style={{
+            position: "absolute",
+            left: consoleMode ? 0 : undefined,
+            right: consoleMode ? undefined : "100%",
+            top: "50%",
+            transform: "translateY(-50%)",
+            zIndex: 30,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: consoleMode ? "flex-start" : "flex-end",
+            gap: 2,
+            transition: "opacity 0.15s ease",
+            opacity: consoleMode || sceneVisible ? 1 : 0,
+            pointerEvents: consoleMode || sceneVisible ? "auto" : "none",
+          }}>
           {/* Bookmark tabs */}
           {[
             { key: "agents" as const, label: "Agents", color: "#c8a050" },
@@ -3115,25 +3177,7 @@ export default function OfficePage() {
               />
             ))}
           </div>
-        </div>
-
-        <div className="term-dotgrid" style={{
-          position: "fixed",
-          right: 0,
-          top: 0,
-          width: consoleMode ? "100vw" : "min(50vw, 960px)",
-          minWidth: 260,
-          height: "100vh",
-          backgroundColor: TERM_PANEL,
-          border: "none",
-          borderLeft: consoleMode ? undefined : `1px solid ${TERM_GREEN}15`,
-          boxShadow: consoleMode ? "none" : TERM_GLOW_BORDER,
-          display: "flex",
-          flexDirection: "row",
-          overflow: "hidden",
-          transition: "width 0.3s ease",
-          zIndex: 10,
-        }}>
+          </div>
           {/* ── Main content area ── */}
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, width: consoleMode ? "90%" : undefined, maxWidth: consoleMode ? "90%" : undefined, margin: consoleMode ? "10px auto" : undefined, border: consoleMode ? `1px solid ${TERM_GREEN}20` : undefined, borderRadius: consoleMode ? 8 : undefined }}>
 

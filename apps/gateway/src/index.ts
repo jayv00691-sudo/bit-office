@@ -1064,8 +1064,8 @@ async function main() {
   console.log("[Gateway] Listening for commands...");
   console.log("[Gateway] Press 'p' + Enter to generate a new pair code");
 
-  // Auto-open browser only in production mode (pnpm start, not dev)
-  if (process.env.NODE_ENV !== "development" && existsSync(config.webDir)) {
+  // Auto-open browser only in production mode (pnpm start, not dev), skip when embedded as sidecar
+  if (process.env.NODE_ENV !== "development" && !process.env.NO_OPEN && existsSync(config.webDir)) {
     const url = `http://localhost:${config.wsPort}`;
     console.log(`[Gateway] Opening ${url}`);
     execFile("open", [url]);

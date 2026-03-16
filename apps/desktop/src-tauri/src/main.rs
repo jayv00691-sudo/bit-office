@@ -12,6 +12,15 @@ struct GatewayState {
     child: Option<tauri_plugin_shell::process::CommandChild>,
 }
 
+fn kill_gateway(app: &tauri::AppHandle) {
+    let state = app.state::<Mutex<GatewayState>>();
+    let mut guard = state.lock().unwrap();
+    if let Some(child) = guard.child.take() {
+        let _ = child.kill();
+        println!("[desktop] Gateway sidecar killed");
+    }
+}
+
 fn main() {
     let is_dev = cfg!(debug_assertions);
 
@@ -38,7 +47,10 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        kill_gateway(app);
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -58,7 +70,6 @@ fn main() {
                 .build(app)?;
 
             // -- Spawn gateway sidecar (production only) --
-            // In dev mode, run gateway separately via `pnpm dev:gateway`
             if !is_dev {
                 let resource_dir = app
                     .path()
@@ -74,6 +85,7 @@ fn main() {
                     .command(node_bin.to_str().unwrap())
                     .args([gateway_js.to_str().unwrap()])
                     .env("WEB_DIR", web_dir.to_str().unwrap())
+                    .env("NO_OPEN", "1")
                     .spawn()
                 {
                     Ok((mut rx, child)) => {
@@ -119,6 +131,15 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![])
-        .run(tauri::generate_context!())
-        .expect("error while running Bit Office");
+        .build(tauri::generate_context!())
+        .expect("error while building Bit Office")
+        .run(|app, event| {
+            // Re-show window when Dock icon is clicked (macOS)
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        });
 }

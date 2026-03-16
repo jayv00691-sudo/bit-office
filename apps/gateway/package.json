@@ -10,7 +10,7 @@
     "dist"
   ],
   "scripts": {
-    "dev": "NODE_ENV=development tsx watch src/index.ts",
+    "dev": "NODE_ENV=development WS_PORT=9099 tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsup && rm -rf dist/web && cp -r ../web/out dist/web",
     "typecheck": "tsc --noEmit"

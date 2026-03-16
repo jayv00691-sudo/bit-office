@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
 export default function PairPage() {
@@ -8,30 +8,14 @@ export default function PairPage() {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showPair, setShowPair] = useState(false);
+  const [status, setStatus] = useState<"connecting" | "failed" | "remote">("connecting");
   const router = useRouter();
 
-  // On mount: check saved connection, then try auto-connect
-  useEffect(() => {
-    const { getConnection } = require("@/lib/storage");
-    const conn = getConnection();
-    if (conn && conn.sessionToken) {
-      router.push("/office");
-      return;
-    }
-    // Clear stale connection without sessionToken (pre-RBAC)
-    if (conn && !conn.sessionToken) {
-      const { clearConnection } = require("@/lib/storage");
-      clearConnection();
-    }
-    tryAutoConnect();
-  }, [router]);
-
-  async function tryAutoConnect(attempt = 0) {
+  const tryAutoConnect = useCallback(async (attempt = 0): Promise<boolean> => {
     const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
-    const maxAttempts = isTauri ? 10 : 1; // Tauri: retry up to 10 times (gateway may still be starting)
+    const maxAttempts = isTauri ? 10 : 5;
 
-    // 1. Production: try same-origin (gateway serves the web bundle)
+    // 1. Same-origin (gateway serves the web bundle in production)
     if (window.location.port !== "3000" && window.location.port !== "3002") {
       try {
         const res = await fetch(`${window.location.origin}/connect`, { signal: AbortSignal.timeout(1000) });
@@ -40,47 +24,68 @@ export default function PairPage() {
           const { saveConnection } = await import("@/lib/storage");
           saveConnection({ mode: "ws", machineId: data.machineId, wsUrl: window.location.origin.replace(/^http/, "ws"), role: data.role ?? "owner", sessionToken: data.sessionToken });
           router.push("/office");
-          return;
+          return true;
         }
       } catch { /* not bundled mode */ }
     }
 
-    // 2. Scan gateway port range (9090–9099, matching gateway auto-retry)
-    const BASE_PORT = 9090;
-    const PORT_RANGE = 10;
-    const timeout = isTauri ? 2000 : 500;
-    console.log(`[pair] Scanning localhost:${BASE_PORT}-${BASE_PORT + PORT_RANGE - 1} (tauri=${isTauri}, timeout=${timeout}ms, attempt=${attempt})`);
-    for (let port = BASE_PORT; port < BASE_PORT + PORT_RANGE; port++) {
-      try {
-        const origin = `http://localhost:${port}`;
-        const res = await fetch(`${origin}/connect`, { signal: AbortSignal.timeout(timeout) });
-        if (!res.ok) continue;
+    // 2. Connect to local gateway — dev=9099, release=9090
+    const isDev = window.location.port === "3000" || window.location.port === "3002";
+    const gwPort = isDev ? 9099 : 9090;
+    const scanTimeout = isTauri ? 2000 : 1500;
+    setStatus("connecting");
+    console.log(`[pair] Connecting to localhost:${gwPort} (dev=${isDev}, attempt=${attempt + 1}/${maxAttempts})`);
+    try {
+      const origin = `http://localhost:${gwPort}`;
+      const res = await fetch(`${origin}/connect`, { signal: AbortSignal.timeout(scanTimeout) });
+      if (res.ok) {
         const data = await res.json();
-        console.log(`[pair] Connected to gateway on port ${port}`);
+        console.log(`[pair] Connected to gateway on port ${gwPort}`);
         const { saveConnection } = await import("@/lib/storage");
-        saveConnection({ mode: "ws", machineId: data.machineId, wsUrl: `ws://localhost:${port}`, role: data.role ?? "owner", sessionToken: data.sessionToken });
+        saveConnection({ mode: "ws", machineId: data.machineId, wsUrl: `ws://localhost:${gwPort}`, role: data.role ?? "owner", sessionToken: data.sessionToken });
         router.push("/office");
-        return;
-      } catch (err) {
-        console.log(`[pair] Port ${port} failed:`, (err as Error).message);
+        return true;
       }
+    } catch {
+      // gateway not ready yet
     }
 
-    // Retry for Tauri (gateway sidecar may need time to start)
+    // Retry
     if (attempt < maxAttempts - 1) {
       await new Promise((r) => setTimeout(r, 1000));
       return tryAutoConnect(attempt + 1);
     }
 
-    // No local gateway found — show pair code form (remote mode)
-    setShowPair(true);
+    return false;
+  }, [router]);
+
+  useEffect(() => {
+    const { getConnection } = require("@/lib/storage");
+    const conn = getConnection();
+    if (conn && conn.sessionToken) {
+      router.push("/office");
+      return;
+    }
+    if (conn && !conn.sessionToken) {
+      const { clearConnection } = require("@/lib/storage");
+      clearConnection();
+    }
+    tryAutoConnect().then((ok) => {
+      if (!ok) setStatus("failed");
+    });
+  }, [router, tryAutoConnect]);
+
+  async function handleRetry() {
+    setStatus("connecting");
+    setError("");
+    const ok = await tryAutoConnect();
+    if (!ok) setStatus("failed");
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleRemoteSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     setLoading(true);
-
     try {
       const gatewayUrl = gateway.includes("://") ? gateway : `http://${gateway}`;
       const res = await fetch(`${gatewayUrl}/pair/validate`, {
@@ -88,14 +93,11 @@ export default function PairPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: code.trim() }),
       });
-
       const data = await res.json();
-
       if (!res.ok) {
         setError(data.error ?? "Failed to pair");
         return;
       }
-
       const { saveConnection } = await import("@/lib/storage");
       saveConnection({
         mode: data.hasAbly ? "ably" : "ws",
@@ -116,16 +118,42 @@ export default function PairPage() {
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 24 }}>
       <h1 style={{ fontSize: 28, marginBottom: 8 }}>Bit Office</h1>
 
-      {/* Auto-connecting spinner */}
-      {!showPair && (
-        <p style={{ color: "#666", fontSize: 14 }}>Connecting...</p>
+      {/* Connecting to local gateway */}
+      {status === "connecting" && (
+        <div style={{ textAlign: "center", marginTop: 24 }}>
+          <p style={{ color: "#888", fontSize: 14 }}>Connecting to local gateway...</p>
+          <div style={{ marginTop: 12, width: 32, height: 32, border: "3px solid #333", borderTopColor: "#4f46e5", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "12px auto" }} />
+        </div>
       )}
 
-      {/* Remote mode: pair code form */}
-      {showPair && (
+      {/* Local connection failed */}
+      {status === "failed" && (
+        <div style={{ textAlign: "center", marginTop: 24, maxWidth: 400 }}>
+          <p style={{ color: "#888", fontSize: 14, marginBottom: 20 }}>No local gateway found. Make sure the gateway is running.</p>
+          <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+            <button
+              onClick={handleRetry}
+              style={{
+                padding: "10px 24px", borderRadius: 8, border: "2px solid #4f46e5",
+                backgroundColor: "transparent", color: "#4f46e5", fontSize: 14, cursor: "pointer",
+              }}
+            >Retry Local</button>
+            <button
+              onClick={() => setStatus("remote")}
+              style={{
+                padding: "10px 24px", borderRadius: 8, border: "none",
+                backgroundColor: "#333", color: "#aaa", fontSize: 14, cursor: "pointer",
+              }}
+            >Connect Remote</button>
+          </div>
+        </div>
+      )}
+
+      {/* Remote gateway form */}
+      {status === "remote" && (
         <>
           <p style={{ color: "#aaa", marginBottom: 32 }}>Enter your gateway address and pair code</p>
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 320 }}>
+          <form onSubmit={handleRemoteSubmit} style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 320 }}>
             <label style={{ fontSize: 13, color: "#888" }}>Gateway Address</label>
             <input
               type="text"
@@ -137,7 +165,6 @@ export default function PairPage() {
                 backgroundColor: "#222", color: "#fff", marginTop: -8,
               }}
             />
-
             <label style={{ fontSize: 13, color: "#888" }}>Pair Code</label>
             <input
               type="text"
@@ -151,22 +178,36 @@ export default function PairPage() {
                 backgroundColor: "#222", color: "#fff", marginTop: -8,
               }}
             />
-            <button
-              type="submit"
-              disabled={loading || code.length < 6 || !gateway.trim()}
-              style={{
-                padding: "12px 24px", borderRadius: 8, border: "none",
-                backgroundColor: code.length >= 6 && gateway.trim() ? "#4f46e5" : "#333",
-                color: "#fff", fontSize: 18, cursor: code.length >= 6 ? "pointer" : "default",
-              }}
-            >
-              {loading ? "Pairing..." : "Connect"}
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => setStatus("failed")}
+                style={{
+                  padding: "12px 16px", borderRadius: 8, border: "1px solid #444",
+                  backgroundColor: "transparent", color: "#888", fontSize: 14, cursor: "pointer",
+                }}
+              >Back</button>
+              <button
+                type="submit"
+                disabled={loading || code.length < 6 || !gateway.trim()}
+                style={{
+                  flex: 1, padding: "12px 24px", borderRadius: 8, border: "none",
+                  backgroundColor: code.length >= 6 && gateway.trim() ? "#4f46e5" : "#333",
+                  color: "#fff", fontSize: 18, cursor: code.length >= 6 ? "pointer" : "default",
+                }}
+              >{loading ? "Pairing..." : "Connect"}</button>
+            </div>
           </form>
+          <button
+            onClick={handleRetry}
+            style={{ marginTop: 16, background: "none", border: "none", color: "#666", fontSize: 12, cursor: "pointer" }}
+          >Retry local connection</button>
         </>
       )}
 
       {error && <p style={{ color: "#ef4444", textAlign: "center", marginTop: 16 }}>{error}</p>}
+
+      <style dangerouslySetInnerHTML={{ __html: `@keyframes spin { to { transform: rotate(360deg); } }` }} />
     </div>
   );
 }

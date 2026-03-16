@@ -11,9 +11,9 @@ echo "=== Building Bit Office Desktop ==="
 echo "[1/3] Building web..."
 cd "$ROOT/web" && pnpm build
 
-# 2. Build gateway bundle
-echo "[2/3] Building gateway..."
-cd "$ROOT/gateway" && pnpm build
+# 2. Build gateway bundle (standalone — all deps bundled for sidecar)
+echo "[2/3] Building gateway (standalone)..."
+cd "$ROOT/gateway" && BUNDLE_ALL=1 pnpm build
 
 # 3. Prepare sidecar directory
 echo "[3/3] Preparing sidecar..."
