@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import path from "path";
+import { CONFIG } from "./config.js";
 
 /** Parsed result from agent output */
 export interface ParsedResult {
@@ -104,6 +105,6 @@ function extractFallbackSummary(raw: string, _hasFiles: boolean, _entryFile?: st
     return `Delegated tasks to ${delegationTargets.join(", ")}`;
   }
 
-  const firstChunk = meaningful.slice(0, 20).join("\n").trim();
-  return firstChunk.slice(0, 2000) || "Task completed";
+  const firstChunk = meaningful.slice(0, CONFIG.limits.fallbackSummaryLines).join("\n").trim();
+  return firstChunk.slice(0, CONFIG.limits.fallbackSummaryChars) || "Task completed";
 }

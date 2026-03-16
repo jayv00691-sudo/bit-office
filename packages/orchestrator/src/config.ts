@@ -36,6 +36,16 @@ export const CONFIG = {
     retryDelayMs: 500,
   },
 
+  limits: {
+    /** Max chars for team chat messages (results, delegations, completions) */
+    chatMessageChars: 2000,
+    /** Max chars for activity intent (short activity feed summaries) */
+    intentChars: 500,
+    /** Max lines / chars for fallback summary when no SUMMARY field is found */
+    fallbackSummaryLines: 20,
+    fallbackSummaryChars: 2000,
+  },
+
   preview: {
     /** Port for static file serving (npx serve) */
     staticPort: 9100,

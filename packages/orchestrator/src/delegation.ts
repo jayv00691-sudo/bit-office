@@ -321,7 +321,7 @@ export class DelegationRouter {
         type: "agent:activity",
         agentId: target.agentId,
         agentName: target.name,
-        intent: cleanPrompt.slice(0, 500),
+        intent: cleanPrompt.slice(0, CONFIG.limits.intentChars),
         phase: "started",
       });
       target.runTask(taskId, fullPrompt, effectiveRepoPath);
@@ -362,7 +362,7 @@ export class DelegationRouter {
         type: "team:chat",
         fromAgentId: agentId,
         toAgentId: originAgentId,
-        message: summary.slice(0, 2000),
+        message: summary.slice(0, CONFIG.limits.chatMessageChars),
         messageType: "result",
         taskId,
         timestamp: Date.now(),
@@ -373,7 +373,7 @@ export class DelegationRouter {
         type: "agent:activity",
         agentId,
         agentName: fromName,
-        intent: summary.slice(0, 500),
+        intent: summary.slice(0, CONFIG.limits.intentChars),
         phase: "completed",
       });
 
@@ -415,7 +415,7 @@ export class DelegationRouter {
             ? `\n\nYour previous review (for reference):\n${meta.reviewContext}`
             : "";
           const reReviewPrompt = this.promptEngine.render("worker-continue", {
-            prompt: `[Re-review after fix] ${fromName} has fixed the issues you reported. Please review the code again.\n\nDev's fix report:\n${summary.slice(0, 2000)}${originalContext}\n\n===== YOUR TASK =====\n1. Check if ALL previously reported ISSUES are resolved\n2. Verify the deliverable runs without crashes\n3. Verify core features work (compare against the original task requirements)\n\nVERDICT: PASS | FAIL\n- PASS = code runs without crashes AND core features are implemented (even if rough)\n- FAIL = crashes/bugs that prevent usage OR core features are missing/broken\nISSUES: (numbered list if FAIL — only real bugs or missing core features)\nSUMMARY: (one sentence overall assessment)`,
+            prompt: `[Re-review after fix] ${fromName} has fixed the issues you reported. Please review the code again.\n\nDev's fix report:\n${summary.slice(0, CONFIG.limits.chatMessageChars)}${originalContext}\n\n===== YOUR TASK =====\n1. Check if ALL previously reported ISSUES are resolved\n2. Verify the deliverable runs without crashes\n3. Verify core features work (compare against the original task requirements)\n\nVERDICT: PASS | FAIL\n- PASS = code runs without crashes AND core features are implemented (even if rough)\n- FAIL = crashes/bugs that prevent usage OR core features are missing/broken\nISSUES: (numbered list if FAIL — only real bugs or missing core features)\nSUMMARY: (one sentence overall assessment)`,
           });
           const repoPath = this.teamProjectDir ?? undefined;
 
@@ -461,7 +461,7 @@ export class DelegationRouter {
       }
 
       // Batch results: accumulate and flush to leader after a short window
-      this.enqueueResult(originAgentId, { fromName, statusWord, summary: summary.slice(0, 2000) });
+      this.enqueueResult(originAgentId, { fromName, statusWord, summary: summary.slice(0, CONFIG.limits.chatMessageChars) });
     };
   }
 
@@ -546,7 +546,7 @@ export class DelegationRouter {
       type: "team:chat",
       fromAgentId: reviewerAgentId,
       toAgentId: devAgentId,
-      message: `Direct fix: ${output.slice(0, 2000)}`,
+      message: `Direct fix: ${output.slice(0, CONFIG.limits.chatMessageChars)}`,
       messageType: "delegation",
       taskId: fixTaskId,
       timestamp: Date.now(),
