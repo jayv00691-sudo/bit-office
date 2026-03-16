@@ -902,7 +902,7 @@ function SysMsg({ ts, tag, text, firstLine, isLong }: { ts: string; tag: string;
 
 function MessageBubble({ msg, agentName, onPreview, isTeamLead, isTeamMember, teamPhase }: { msg: ChatMessage; agentName?: string; onPreview?: (url: string) => void; isTeamLead?: boolean; isTeamMember?: boolean; teamPhase?: string | null }) {
   const ts = new Date(msg.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const base: React.CSSProperties = { marginBottom: 3, fontSize: TERM_SIZE, fontFamily: TERM_FONT, fontWeight: 400, lineHeight: 1.4 };
+  const base: React.CSSProperties = { marginBottom: 3, fontSize: TERM_SIZE, fontFamily: TERM_FONT, fontWeight: 400, lineHeight: 1.5 };
 
   // ── User input ──
   if (msg.role === "user") {
@@ -975,36 +975,44 @@ function MessageBubble({ msg, agentName, onPreview, isTeamLead, isTeamMember, te
     const projectDir = r.projectDir ?? r.summary.match(/PROJECT_DIR:\s*(.+)/i)?.[1]?.trim();
     const changedFiles = r.changedFiles ?? [];
     return (
-      <div className="term-msg" style={{ ...base, marginTop: 6 }}>
-        <span style={{ color: TERM_DIM, fontSize: 10 }}>{ts} </span>
-        <span style={{ color: TERM_GREEN, textShadow: TERM_GLOW, fontSize: 10 }}>[done] </span>
+      <div className="term-msg" style={{ ...base, marginTop: 10, borderTop: `1px solid ${TERM_GREEN}08`, paddingTop: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+          <span style={{ color: TERM_DIM, fontSize: 10 }}>{ts}</span>
+          <span style={{
+            display: "inline-block", padding: "1px 8px", borderRadius: 10,
+            backgroundColor: `${TERM_GREEN}18`, color: TERM_GREEN,
+            fontSize: 9, fontFamily: TERM_FONT, fontWeight: 600, letterSpacing: "0.03em",
+          }}>DONE</span>
+          {msg.durationMs && msg.durationMs > 1000 && (
+            <span style={{ color: TERM_DIM, fontSize: 9, fontFamily: TERM_FONT }}>{formatDuration(msg.durationMs)}</span>
+          )}
+        </div>
         <span style={{ color: TERM_TEXT, wordBreak: "break-word" }} className="chat-markdown"><MdContent text={cleanSummary || "completed."} /></span>
-        {(projectDir || entryFile) && <div style={{ color: TERM_DIM, marginLeft: 0 }}>
-          {projectDir && <span>  dir:{projectDir} </span>}
-          {entryFile && <span style={{ cursor: "pointer", color: TERM_GREEN, opacity: 0.6 }} onClick={() => sendCommand({ type: "OPEN_FILE", path: entryFile })}> entry:{entryFile}</span>}
-        </div>}
-        {changedFiles.length > 0 && <div style={{ color: TERM_DIM }}> {changedFiles.length} files changed</div>}
-        {hasWebPreview(r) && onPreview && <span onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) onPreview(url); }} style={{ color: TERM_GREEN, cursor: "pointer", border: `1px solid ${TERM_GREEN}40`, padding: "3px 12px", marginTop: 4, display: "inline-block", fontSize: 10, fontFamily: TERM_FONT, backgroundColor: `${TERM_GREEN}10`, transition: "all 0.15s" }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}20`; e.currentTarget.style.borderColor = TERM_GREEN; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}10`; e.currentTarget.style.borderColor = `${TERM_GREEN}40`; }}>preview</span>}
-        {!hasWebPreview(r) && buildPreviewCommand(r) && <span onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); }} style={{ color: TERM_GREEN, cursor: "pointer", border: `1px solid ${TERM_GREEN}40`, padding: "3px 12px", marginTop: 4, display: "inline-block", fontSize: 10, fontFamily: TERM_FONT, backgroundColor: `${TERM_GREEN}10`, transition: "all 0.15s" }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}20`; e.currentTarget.style.borderColor = TERM_GREEN; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}10`; e.currentTarget.style.borderColor = `${TERM_GREEN}40`; }}>launch</span>}
-        {msg.durationMs && msg.durationMs > 1000 && (
-          <div style={{ color: TERM_DIM, marginTop: 3, fontSize: 10, fontFamily: TERM_FONT }}>
-            {"\u2731"} {formatDuration(msg.durationMs)}
+        {(projectDir || entryFile) && (
+          <div style={{ color: TERM_DIM, fontSize: 10, marginTop: 2 }}>
+            {projectDir && <span className="term-path-scroll" style={{ opacity: 0.7 }}>{projectDir}</span>}
+            {entryFile && <span onClick={() => sendCommand({ type: "OPEN_FILE", path: entryFile })} style={{ cursor: "pointer", color: TERM_GREEN, opacity: 0.6, marginLeft: projectDir ? 8 : 0 }}>{entryFile}</span>}
           </div>
         )}
+        {changedFiles.length > 0 && <div style={{ color: TERM_DIM, fontSize: 10, marginTop: 1 }}>{changedFiles.length} files changed</div>}
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          {hasWebPreview(r) && onPreview && <button className="term-btn" onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) onPreview(url); }} style={{ color: TERM_GREEN, cursor: "pointer", border: `1px solid ${TERM_GREEN}40`, padding: "4px 16px", borderRadius: 4, fontSize: 10, fontFamily: TERM_FONT, fontWeight: 600, backgroundColor: `${TERM_GREEN}10`, transition: "all 0.15s", boxShadow: `0 0 0 transparent` }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}20`; e.currentTarget.style.boxShadow = `0 0 8px ${TERM_GREEN}20`; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}10`; e.currentTarget.style.boxShadow = "0 0 0 transparent"; }}>preview</button>}
+          {!hasWebPreview(r) && buildPreviewCommand(r) && <button className="term-btn" onClick={() => { const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); }} style={{ color: TERM_GREEN, cursor: "pointer", border: `1px solid ${TERM_GREEN}40`, padding: "4px 16px", borderRadius: 4, fontSize: 10, fontFamily: TERM_FONT, fontWeight: 600, backgroundColor: `${TERM_GREEN}10`, transition: "all 0.15s", boxShadow: `0 0 0 transparent` }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}20`; e.currentTarget.style.boxShadow = `0 0 8px ${TERM_GREEN}20`; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}10`; e.currentTarget.style.boxShadow = "0 0 0 transparent"; }}>launch</button>}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="term-msg" style={base}>
+    <div className="term-msg" style={{ ...base, borderTop: `1px solid ${TERM_GREEN}06`, paddingTop: 6, marginTop: 4 }}>
       <span style={{ color: TERM_DIM, fontSize: 10 }}>{ts} </span>
       <span style={{ color: TERM_GREEN, opacity: 0.3, fontSize: 10 }}>[{agentName ?? "agent"}] </span>
-      <div style={{ marginLeft: 0, marginTop: 0, color: TERM_TEXT, wordBreak: "break-word" }} className="chat-markdown">
+      <div style={{ marginLeft: 0, marginTop: 2, color: TERM_TEXT, wordBreak: "break-word" }} className="chat-markdown">
         {planContent ? (
           <>
             {textWithoutPlan && <span className="chat-markdown"><MdContent text={textWithoutPlan} /></span>}
-            <div style={{ marginTop: 2, paddingLeft: 8, borderLeft: `1px solid ${TERM_GREEN}15` }}>
-              <span style={{ color: TERM_GREEN, opacity: 0.3 }}>[plan] </span>
+            <div style={{ marginTop: 4, paddingLeft: 10, borderLeft: `2px solid ${TERM_GREEN}20`, borderRadius: 1 }}>
+              <span style={{ color: TERM_GREEN, opacity: 0.3, fontSize: 10 }}>[plan] </span>
               <span className="chat-markdown"><MdContent text={planContent!} /></span>
             </div>
           </>
@@ -1012,13 +1020,13 @@ function MessageBubble({ msg, agentName, onPreview, isTeamLead, isTeamMember, te
           <MdContent text={displayText} />
         )}
         {msg.result && msg.result.changedFiles.length > 0 && !planContent && (
-          <div style={{ color: TERM_DIM }}> {msg.result.changedFiles.length} files: {msg.result.changedFiles.slice(0, 3).join(", ")}{msg.result.changedFiles.length > 3 ? ` +${msg.result.changedFiles.length - 3}` : ""}</div>
+          <div style={{ color: TERM_DIM, fontSize: 10, marginTop: 2 }}>{msg.result.changedFiles.length} files: {msg.result.changedFiles.slice(0, 3).join(", ")}{msg.result.changedFiles.length > 3 ? ` +${msg.result.changedFiles.length - 3}` : ""}</div>
         )}
         {msg.result && hasWebPreview(msg.result) && onPreview && !isTeamMember && !isTeamLead && (
-          <span onClick={() => { const r = msg.result!; const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) setTimeout(() => onPreview(url), r.previewUrl ? 0 : 1500); }} style={{ color: TERM_GREEN, cursor: "pointer", border: `1px solid ${TERM_GREEN}40`, padding: "3px 12px", marginTop: 4, display: "inline-block", fontSize: 10, fontFamily: TERM_FONT, backgroundColor: `${TERM_GREEN}10`, transition: "all 0.15s" }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}20`; e.currentTarget.style.borderColor = TERM_GREEN; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}10`; e.currentTarget.style.borderColor = `${TERM_GREEN}40`; }}>preview</span>
+          <button className="term-btn" onClick={() => { const r = msg.result!; const cmd = buildPreviewCommand(r); if (cmd) sendCommand(cmd); const url = computePreviewUrl(r); if (url) setTimeout(() => onPreview(url), r.previewUrl ? 0 : 1500); }} style={{ color: TERM_GREEN, cursor: "pointer", border: `1px solid ${TERM_GREEN}40`, padding: "4px 16px", borderRadius: 4, marginTop: 6, display: "inline-block", fontSize: 10, fontFamily: TERM_FONT, fontWeight: 600, backgroundColor: `${TERM_GREEN}10`, transition: "all 0.15s", boxShadow: "0 0 0 transparent" }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}20`; e.currentTarget.style.boxShadow = `0 0 8px ${TERM_GREEN}20`; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${TERM_GREEN}10`; e.currentTarget.style.boxShadow = "0 0 0 transparent"; }}>preview</button>
         )}
         {msg.durationMs && msg.durationMs > 1000 && (
-          <div style={{ color: TERM_DIM, marginTop: 3, fontSize: 10, fontFamily: TERM_FONT }}>
+          <div style={{ color: TERM_DIM, marginTop: 3, fontSize: 9, fontFamily: TERM_FONT }}>
             {"\u2731"} {formatDuration(msg.durationMs)}
           </div>
         )}
@@ -3437,10 +3445,12 @@ export default function OfficePage() {
 
                         return (
                           <div style={{
-                            padding: "8px 10px", borderTop: "1px solid #152515",
-                            background: "rgba(10,14,10,0.8)",
-                            backdropFilter: "blur(8px)",
-                            WebkitBackdropFilter: "blur(8px)",
+                            padding: "8px 12px",
+                            borderTop: `1px solid ${TERM_GREEN}10`,
+                            background: "rgba(6,10,6,0.85)",
+                            backdropFilter: "blur(16px)",
+                            WebkitBackdropFilter: "blur(16px)",
+                            boxShadow: `0 -1px 8px rgba(0,0,0,0.2), inset 0 1px 0 ${TERM_GREEN}06`,
                             flexShrink: 0,
                           }}>
                             {isTeamMember ? (
