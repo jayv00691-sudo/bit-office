@@ -717,6 +717,7 @@ type TermTheme = {
   codeBg: string;
   codeText: string;
   scrollThumb: string;
+  clean?: boolean; // Disable CRT textures, dot grid, glow effects
 };
 
 const TERM_THEMES: Record<string, TermTheme> = {
@@ -805,6 +806,42 @@ const TERM_THEMES: Record<string, TermTheme> = {
     codeText: "#7a9040",
     scrollThumb: "#3e4430",
   },
+  office: {
+    name: "Office",
+    accent: "#d4a860",
+    accentRgb: "212,168,96",
+    dim: "#685848",
+    text: "#b8a898",
+    textBright: "#e0d4c8",
+    bg: "#141218",
+    panel: "#1a1820",
+    surface: "#201e28",
+    hover: "#282430",
+    border: "#302a38",
+    borderDim: "#262030",
+    codeBg: "#18161e",
+    codeText: "#a08858",
+    scrollThumb: "#383040",
+    clean: true,
+  },
+  slate: {
+    name: "Slate",
+    accent: "#6aaddf",
+    accentRgb: "106,173,223",
+    dim: "#606878",
+    text: "#b0b8c4",
+    textBright: "#d8dce4",
+    bg: "#1e2228",
+    panel: "#232830",
+    surface: "#282e36",
+    hover: "#303840",
+    border: "#384048",
+    borderDim: "#303840",
+    codeBg: "#1c2026",
+    codeText: "#70a0c8",
+    scrollThumb: "#384450",
+    clean: true,
+  },
 };
 
 // Mutable theme variables — reassigned by applyTermTheme()
@@ -835,9 +872,9 @@ function applyTermTheme(key: string) {
   TERM_HOVER = t.hover;
   TERM_BORDER = t.border;
   TERM_BORDER_DIM = t.borderDim;
-  TERM_GLOW = `0 0 8px rgba(${t.accentRgb},0.25)`;
-  TERM_GLOW_BORDER = `0 0 6px ${t.accent}15, inset 0 0 6px ${t.accent}08`;
-  TERM_GLOW_FOCUS = `0 0 12px ${t.accent}30, 0 0 4px ${t.accent}20`;
+  TERM_GLOW = t.clean ? "none" : `0 0 8px rgba(${t.accentRgb},0.25)`;
+  TERM_GLOW_BORDER = t.clean ? "none" : `0 0 6px ${t.accent}15, inset 0 0 6px ${t.accent}08`;
+  TERM_GLOW_FOCUS = t.clean ? "none" : `0 0 12px ${t.accent}30, 0 0 4px ${t.accent}20`;
   // Update CSS variables for layout.tsx CSS rules
   if (typeof document !== "undefined") {
     const s = document.documentElement.style;
@@ -855,6 +892,13 @@ function applyTermTheme(key: string) {
     s.setProperty("--term-code-bg", t.codeBg);
     s.setProperty("--term-code-text", t.codeText);
     s.setProperty("--term-scroll-thumb", t.scrollThumb);
+    s.setProperty("--term-clean", t.clean ? "1" : "0");
+    // Toggle clean mode class on root for CSS selectors
+    if (t.clean) {
+      document.documentElement.classList.add("term-clean");
+    } else {
+      document.documentElement.classList.remove("term-clean");
+    }
   }
 }
 

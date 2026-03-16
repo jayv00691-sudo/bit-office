@@ -313,6 +313,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           .term-chat-area {
             background-image: linear-gradient(to bottom, rgba(0,0,0,0.15) 0%, transparent 40px, transparent 100%);
           }
+          /* ── Clean mode: disable all textures and effects ── */
+          .term-clean .crt-screen { animation: none !important; }
+          .term-clean .crt-screen::after { display: none !important; }
+          .term-clean .crt-scanline-bar { display: none !important; }
+          .term-clean .term-dotgrid { background-image: none !important; }
+          .term-clean .term-chat-area { background-image: none !important; }
+          .term-clean .term-input:focus { animation: none !important; box-shadow: none !important; outline: none; }
         `}} />
         {children}
         <script
