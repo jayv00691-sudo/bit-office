@@ -152,8 +152,8 @@ Bit Office also ships as a native **macOS desktop app** powered by [Tauri](https
 
 ### Prerequisites
 
-- **Rust** toolchain (`rustup`)
 - **Node.js** 18+, **pnpm**
+- **Rust** toolchain — install via: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
 ### Dev Mode
 
