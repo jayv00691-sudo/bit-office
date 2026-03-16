@@ -78,6 +78,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           *::-webkit-scrollbar-corner {
             background: transparent;
           }
+          /* Custom select styling for WebView compatibility */
+          select {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%239a8a68'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            background-size: 10px 6px;
+            padding-right: 24px !important;
+            border-radius: 3px;
+          }
+          select option {
+            background: #14112a;
+            color: #eddcb8;
+          }
           .px-font {
             font-family: 'Press Start 2P', monospace;
           }
