@@ -555,11 +555,15 @@ export const useOfficeStore = create<OfficeStore>((set, get) => ({
           const errorId = event.taskId + "-error";
           if (agent.messages.some((m) => m.id === errorId)) break; // dedupe
           const isCancelled = event.error === "Task cancelled by user";
+          // Preserve error details from streaming output before removing it
+          const failStreamId = event.taskId + "-stream";
+          const failStreamMsg = agent.messages.find((m) => m.id === failStreamId);
+          const streamErrorText = failStreamMsg?._accumulatedText || failStreamMsg?.text || "";
+          // Use streaming text if it contains a more specific error than the generic exit message
+          const isGenericExit = /^Process exited with code \d+$/.test(event.error);
           const displayText = isCancelled
             ? "Current task has been cancelled. Tell me continue to pick up where I left off, or start something entirely new."
-            : event.error;
-          // Remove streaming message for this task
-          const failStreamId = event.taskId + "-stream";
+            : (isGenericExit && streamErrorText) ? streamErrorText : event.error;
           const cleanedMessages = agent.messages.filter((m) => m.id !== failStreamId);
           agents.set(event.agentId, {
             ...agent,
